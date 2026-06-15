@@ -16,6 +16,7 @@ Student Kickoff Guide - Event Detection.pdf
 # Provider raw data is private/large and must be added locally.
 data/raw/*
 !data/raw/.gitkeep
+data/raw.zip
 
 # Interim and processed outputs are reproducible by running the pipeline.
 data/interim/*
