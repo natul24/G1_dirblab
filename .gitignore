@@ -1,0 +1,44 @@
+# Python bytecode/cache files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+**/*.py[cod]
+
+# OS/editor/runtime cache files
+.DS_Store
+.matplotlib_cache/
+.ipynb_checkpoints/
+
+# Local course/reference PDFs
+DRIBLAB_CAPSTONE_EXECUTIVE_SUMMARY.pdf
+Student Kickoff Guide - Event Detection.pdf
+
+# Provider raw data is private/large and must be added locally.
+data/raw/*
+!data/raw/.gitkeep
+
+# Interim and processed outputs are reproducible by running the pipeline.
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+!data/processed/model_base/
+data/processed/model_base/*
+!data/processed/model_base/.gitkeep
+!data/processed/pass_classifier/
+data/processed/pass_classifier/*
+!data/processed/pass_classifier/.gitkeep
+!data/processed/possession_sequence/
+data/processed/possession_sequence/*
+!data/processed/possession_sequence/.gitkeep
+!data/processed/rule_based_detection/
+data/processed/rule_based_detection/*
+!data/processed/rule_based_detection/.gitkeep
+
+# Trained model artifacts are reproducible.
+artifacts/models/**/*.joblib
+*.joblib
+
+# Generated figures are reproducible.
+reports/figures/*
+!reports/figures/.gitkeep

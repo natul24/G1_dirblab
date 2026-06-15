@@ -1,0 +1,176 @@
+paths:
+  raw_data_dir: data/raw
+  interim_data_dir: data/interim
+  processed_data_dir: data/processed
+  artifacts_dir: artifacts
+  reference_data_dir: data/reference
+  model_base_dir: data/processed/model_base
+  possession_sequence_dir: data/processed/possession_sequence
+  rule_based_detection_dir: data/processed/rule_based_detection
+  pass_classifier_dir: data/processed/pass_classifier
+  trained_models_dir: artifacts/models
+  pass_classifier_model_dir: artifacts/models/pass_classifier
+  master_join_table: data/processed/model_base/master_join_table.parquet
+  match_splits: config.yaml
+
+pitch:
+  length_m: 105.0
+  width_m: 68.0
+
+match_splits:
+  split_strategy: match_id_holdout_sorted_v1
+  train:
+    - "678949"
+    - "679026"
+    - "679053"
+    - "679072"
+    - "679075"
+    - "679088"
+    - "679104"
+    - "679128"
+    - "682607"
+    - "682717"
+    - "682815"
+    - "683132"
+    - "683190"
+    - "683253"
+    - "683261"
+    - "683309"
+    - "683425"
+    - "684014"
+    - "684119"
+    - "684139"
+    - "684141"
+    - "684147"
+    - "689340"
+  validation:
+    - "689526"
+    - "689552"
+    - "689556"
+    - "713886"
+    - "713893"
+  test:
+    - "713910"
+    - "713946"
+    - "713998"
+    - "714000"
+    - "745399"
+
+etl:
+  default_match_id: "679026"
+  max_rows: 40
+
+step2:
+  all_matches: true
+  match_id: "679026"
+  max_ball_gap_frames: 10
+  possession_distance_m: 2.0
+  possession_max_ball_speed_mps: 12.0
+  max_sync_tolerance_sec: 1.0
+  direction_score_tolerance_sec: 0.3
+  max_speed_dt_sec: 0.5
+
+step3:
+  max_gap_frames: 3
+  min_stable_frames: 3
+
+step4:
+  evaluation_split: test
+  shot_min_speed_mps: 14.0
+  shot_min_attacking_x: 70.0
+  shot_min_dx_attacking: 0.25
+  interception_min_ball_speed_mps: 4.0
+  boundary_margin: 0.5
+  corner_y_margin: 12.0
+  rule_classes:
+    - no event
+    - pass
+    - interception
+    - tackle
+    - shot
+    - out
+    - corner
+    - other_event
+  label_groups:
+    shot:
+      - GOAL
+      - SAVED SHOT
+      - MISSED SHOT
+      - SHOT ON POST
+      - TEMP GOAL
+      - TEMP ATTEMP
+      - CHANCE MISSED
+    pass:
+      - PASS
+      - OFFSIDE PASS
+      - LONG BALL
+      - CROSS
+      - KEY PASS
+      - THROUGHBALL
+      - PASS INTO OPP BOX
+      - PASS OPP HALF
+      - PASS OWN HALF
+    tackle:
+      - TACKLE
+      - TACKLE WITH POSSESSION
+      - TACKLE WITHOUT POSSESSION
+      - DISPOSSESSED
+    interception:
+      - INTERCEPTION
+      - BLOCKED PASS
+    out:
+      - OUT
+      - FOUL THROW IN
+      - GOAL KICK
+    corner:
+      - CORNER AWARDED
+
+pass_model:
+  target: is_pass
+  algorithm: logistic_regression
+  threshold: 0.5
+  c_value: 1.0
+  max_iter: 1000
+  solver: lbfgs
+  random_state: 42
+  class_weight: balanced
+  positive_labels:
+    - PASS
+    - OFFSIDE PASS
+    - LONG BALL
+    - CROSS
+    - KEY PASS
+    - THROUGHBALL
+    - PASS INTO OPP BOX
+    - PASS OPP HALF
+    - PASS OWN HALF
+  feature_columns:
+    - period_id
+    - match_clock_min
+    - match_clock_sec
+    - tracking_match_clock_seconds
+    - cam_present
+    - ball_x_raw
+    - ball_y_raw
+    - ball_z_m_raw
+    - ball_x
+    - ball_y
+    - ball_z_m
+    - ball_present_raw
+    - ball_interpolated
+    - dt_sec
+    - ball_speed_xy_mps
+    - ball_speed_mps
+    - ball_acceleration_mps2
+    - nearest_player_visible
+    - nearest_player_distance_to_ball_m
+    - has_possession
+    - player_count
+    - visible_player_count
+    - mean_player_speed_mps
+    - max_player_speed_mps
+    - mean_reliable_player_speed_mps
+    - max_reliable_player_speed_mps
+    - min_distance_to_ball_m
+    - mean_distance_to_ball_m
+    - visible_player_share
