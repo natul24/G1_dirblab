@@ -37,8 +37,11 @@ conda activate driblabvenv
 
 3. Add the raw Driblab files locally.
 
-Raw data is ignored by Git, so it will not come from GitHub. Put the shared raw
-files into the existing `data/raw/` folder using these names:
+Raw data is ignored by Git, so it will not come from GitHub. Download the shared
+raw data file from
+[Google Drive](https://drive.google.com/file/d/1cWG2Yly2w1boaDFIX_S076lvqiHS_Yde/view?usp=sharing),
+extract it locally if needed, and put the raw files into the existing
+`data/raw/` folder using these names:
 
 ```text
 data/raw/<match_id>_events.json
@@ -229,7 +232,7 @@ regenerate processed outputs and model artifacts if needed.
 
 | Local path | Why contents are ignored | How to get contents locally |
 | --- | --- | --- |
-| `data/raw/` | Original provider data can be large or private. | Copy the raw Driblab files into this folder from the shared class/project source. |
+| `data/raw/` | Original provider data can be large or private. | Download the shared raw data from [Google Drive](https://drive.google.com/file/d/1cWG2Yly2w1boaDFIX_S076lvqiHS_Yde/view?usp=sharing), then copy the files into this folder. |
 | `data/interim/` | Temporary scratch outputs are not part of the modelling contract. | Recreate only if a future stage needs them. |
 | `data/processed/` | Generated Parquet, CSV, and JSON outputs can be recreated from raw data. | Run `python main.py step2`, `python main.py step3`, `python main.py step4`, and `python main.py pass_model`. |
 | `artifacts/models/**/*.joblib` | Trained model files can be recreated. | Run `python main.py pass_model`. |
