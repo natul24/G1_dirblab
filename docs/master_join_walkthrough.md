@@ -1,4 +1,4 @@
-# Step 2 Guide: How the Master Join Table Is Built
+# Master Join Walkthrough
 
 This guide explains Step 2 for someone who has not looked at the code.
 

@@ -7,7 +7,7 @@ master join table has one row per original tracking row. Selected events are
 attached to the nearest tracking frame in the same period.
 
 For the full plain-language build walkthrough, see
-[`docs/step2_foundation.md`](step2_foundation.md).
+[`docs/master_join_walkthrough.md`](master_join_walkthrough.md).
 
 ## Main Tables
 
