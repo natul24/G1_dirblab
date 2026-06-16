@@ -70,7 +70,7 @@ pd.merge_asof(
     left_on="event_match_clock_seconds",
     right_on="tracking_match_clock_seconds",
     direction="nearest",
-    tolerance=1.0,
+    tolerance=0.5,
 )
 ```
 
@@ -99,22 +99,32 @@ Current generated shape:
 
 ```text
 matches: 33
-rows: 1,197,870
-columns: 86
+rows: 1,986,630
+columns: 81
 event-prefixed columns: 36
-non-event tracking/feature columns: 50
-tracking rows with no event: 1,164,417
-tracking rows with at least one event: 33,453
+non-event tracking/feature columns: 45
+tracking rows with no event: 1,944,246
+tracking rows with at least one selected event: 42,384
 ```
 
 The table is tracking-first:
 
-- one row per reliable live tracking frame
+- one row per tracking frame
 - tracking/frame columns stay on every row
-- event columns are filled only when an event matched that frame
+- event columns are filled only when one of the selected event types matched
+  that frame
 - event columns use the `event_` prefix
 - rows without matched events have `event_label = "no event"` and
   `event_type_name = "no event"`
+
+Step 2 currently keeps only these provider event types as modelling labels:
+
+```text
+PASS, BALL TOUCH, AERIAL, TACKLE, BALL RECOVERY, FOUL, TAKEON
+```
+
+All other provider events are ignored by the Step 2 event join and therefore
+remain `no event` rows in the master join table.
 
 ## Coordinate System
 
@@ -129,6 +139,35 @@ coordinate system for x/y positions:
   attacking perspective in columns such as `ball_x_attacking`
 - original event coordinates are preserved as `event_x`, `event_y`,
   `event_x_start`, `event_y_start`, `event_x_end`, and `event_y_end`
+
+The normalized field convention is:
+
+```text
+x = 0      defensive goal / own-goal side
+x = 100    attacking goal
+y = 0      one touchline
+y = 100    opposite touchline
+```
+
+Event coordinates already follow this attacking-direction convention. Tracking
+coordinates do not: they start as physical meter coordinates on a `105 x 68`
+pitch. Step 2 converts saved tracking x/y fields with:
+
+```text
+tracking_x_0_100 = clip(tracking_x_m / 105 * 100, 0, 100)
+tracking_y_0_100 = clip(tracking_y_m / 68 * 100, 0, 100)
+```
+
+Then Step 2 creates attacking-perspective tracking columns so the reference team
+always attacks toward high x:
+
+```text
+if reference team attacks +x:
+    ball_x_attacking = ball_x
+
+if reference team attacks -x:
+    ball_x_attacking = 100 - ball_x
+```
 
 So the ETL finding is reflected in Step 2 through the alignment logic: event
 coordinates arrive as normalized `0-100`, then Step 2 converts tracking x/y to
@@ -185,8 +224,8 @@ for the model-ready table.
 | Events | `event_x`, `event_y`, `event_x_start`, `event_y_start`, `event_x_end`, `event_y_end` keep the provider's original `0-100` attacking-direction coordinates | Not normalized or flipped |
 | Tracking ball x/y | Original meter x/y values are used internally for interpolation, speed, acceleration, distance, possession, and attack-direction inference | Final table columns `ball_x_raw`, `ball_y_raw`, `ball_x`, and `ball_y` are converted from tracking meters to `0-100` and clipped to `[0, 100]`; `ball_x_raw_attacking`, `ball_y_raw_attacking`, `ball_x_attacking`, and `ball_y_attacking` express those tracking coordinates from the reference team's attacking perspective |
 | Tracking ball z | `ball_z_m_raw` and `ball_z_m` stay in meters because height is not a field x/y coordinate | Not normalized |
-| Tracking player x/y | Original meter player positions are used internally to compute player speed and distance-to-ball features | Player-level x/y rows are not saved in the public Step 2 outputs; only frame-level player aggregates are kept in the master join table |
-| Physical features | `ball_speed_xy_mps`, `ball_speed_mps`, `ball_acceleration_mps2`, player speed, and distance-to-ball fields stay in metric units | Not normalized |
+| Tracking player x/y | Original meter player positions are used internally to identify nearest-player and distance-to-ball features | Player-level x/y rows are not saved in the public Step 2 outputs; only frame-level player count, visibility count, and distance-to-ball aggregates are kept in the master join table |
+| Physical features | `ball_speed_xy_mps`, `ball_speed_mps`, `ball_acceleration_mps2`, and distance-to-ball fields stay in metric units | Not normalized |
 
 If more than one event matches the same tracking frame, Step 2 keeps aggregate
 frame labels:
@@ -236,8 +275,7 @@ Possession and player aggregate features include:
 - nearest player/team fields
 - possession player/team fields
 - player counts
-- visible player count/share
-- mean/max player speed
+- visible player count
 - min/mean distance to ball
 
 Event label columns include:
@@ -275,16 +313,60 @@ The raw nested tracking JSON player lists are not stored in the final Parquet
 table for now. The table keeps flattened frame-level tracking fields and
 engineered player aggregates instead.
 
+### Ball Speed and Acceleration Features
+
+Ball speed and acceleration are calculated from tracking-derived ball positions
+before the saved x/y columns are normalized to the `0-100` field scale. The
+calculations use metric tracking coordinates, so the output units remain metric.
+
+A consecutive frame for these calculations means the next tracking row in the
+same `period_id` after sorting by `video_timestamp`. It is not assumed to be
+`frame_id + 1`.
+
+The elapsed time field is:
+
+```text
+dt_sec = current video_timestamp - previous live-frame video_timestamp
+```
+
+Step 2 only treats the frame-to-frame jump as valid when:
+
+```text
+0 < dt_sec <= max_speed_dt_sec
+```
+
+The current default for `max_speed_dt_sec` is `0.50` seconds. Larger gaps are
+left as missing for speed and acceleration so that long camera or tracking gaps
+do not create artificial movement spikes.
+
+For valid frame gaps, horizontal and 3D ball speed are:
+
+```text
+ball_speed_xy_mps = sqrt(dx^2 + dy^2) / dt_sec
+ball_speed_mps    = sqrt(dx^2 + dy^2 + dz^2) / dt_sec
+```
+
+Ball acceleration is then the frame-to-frame change in 3D ball speed:
+
+```text
+ball_acceleration_mps2 =
+    (current ball_speed_mps - previous ball_speed_mps) / dt_sec
+```
+
+This is acceleration based on change in speed, not a full x/y/z acceleration
+vector.
+
 ## Cleaning and Feature Logic
 
 Step 2 also does the foundation cleaning needed before modelling:
 
 1. Syncs event timestamps to tracking frames by nearest match-clock frame; this
    is the timestamp drift-correction step.
-2. Keeps reliable live frames where `cam` is present.
+2. Keeps all tracking frames and uses `cam_present` as a reliability field.
 3. Interpolates short ball gaps inside live play.
 4. Computes ball speed and acceleration.
-5. Builds player-level positions, player speed, and distance to ball.
+5. Builds nearest-player, player-count, visibility-count, and distance-to-ball
+   features.
 6. Estimates possession from the nearest player when the player is close enough
    and the ball is not moving too fast.
 7. Infers attacking direction by comparing provider-normalized event

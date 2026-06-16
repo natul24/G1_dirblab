@@ -469,6 +469,16 @@ In Step 2, event coordinates are still kept as event columns. Tracking ball x/y
 columns are the ones converted for modelling, including attacking-perspective
 tracking columns such as `ball_x_attacking` and `ball_y_attacking`.
 
+The modelling convention is `x = 0` at the reference team's own-goal side and
+`x = 100` at the goal the reference team is attacking. Event coordinates already
+use that provider convention. Tracking coordinates start in meters, so Step 2
+normalizes saved tracking x/y fields with:
+
+```text
+tracking_x_0_100 = clip(tracking_x_m / 105 * 100, 0, 100)
+tracking_y_0_100 = clip(tracking_y_m / 68 * 100, 0, 100)
+```
+
 `ball_x_attacking` is a tracking-derived coordinate read from the reference
 team's attacking direction. A value of `0` means close to that team's own goal,
 `100` means close to the goal that team is attacking, and `20` means the ball is
@@ -490,14 +500,17 @@ For model training across all available matches, use:
 data/processed/model_base/master_join_table.parquet
 ```
 
-That combined Parquet table has one row per reliable live-play frame across every match,
+That combined Parquet table has one row per tracking frame across every match,
 with tracking/ball/possession/player aggregate features and the matched event
 columns joined onto frames where events occur. Event columns are prefixed with
 `event_`; frames without a matched event are labelled `no event` in
-`event_label` and `event_type_name`. Events are joined to tracking using
-match-clock time only: `period_id + min/sec/milisec` matched to the closest
-tracking `period + match_clock + frame_index/FPS` row. This nearest-frame sync
-is the timestamp drift-correction step.
+`event_label` and `event_type_name`. Step 2 currently labels only `PASS`,
+`BALL TOUCH`, `AERIAL`, `TACKLE`, `BALL RECOVERY`, `FOUL`, and `TAKEON`;
+other provider events remain `no event` rows in this modelling table. Events
+are joined to tracking using match-clock time only: `period_id + min/sec/milisec`
+matched to the closest tracking `period + match_clock + frame_index/FPS` row
+within `0.5` seconds. This nearest-frame sync is the timestamp drift-correction
+step.
 Field x/y coordinates are kept on a normalized `0-100` scale for modelling;
 raw tracking meter coordinates are converted and clipped into that range.
 

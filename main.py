@@ -104,6 +104,7 @@ def run_step2(args: argparse.Namespace, config: dict[str, Any]) -> None:
             step_config["direction_score_tolerance_sec"]
         ),
         max_speed_dt_sec=float(step_config["max_speed_dt_sec"]),
+        event_type_names=tuple(step_config.get("event_type_names", [])),
     )
     result = run_step2_batch(batch_config)
     print("\nStep 2 complete")

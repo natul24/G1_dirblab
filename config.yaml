@@ -66,9 +66,17 @@ step2:
   max_ball_gap_frames: 10
   possession_distance_m: 2.0
   possession_max_ball_speed_mps: 12.0
-  max_sync_tolerance_sec: 1.0
+  max_sync_tolerance_sec: 0.5
   direction_score_tolerance_sec: 0.3
   max_speed_dt_sec: 0.5
+  event_type_names:
+    - PASS
+    - BALL TOUCH
+    - AERIAL
+    - TACKLE
+    - BALL RECOVERY
+    - FOUL
+    - TAKEON
 
 step3:
   max_gap_frames: 3
@@ -85,45 +93,13 @@ step4:
   rule_classes:
     - no event
     - pass
-    - interception
     - tackle
-    - shot
-    - out
-    - corner
     - other_event
   label_groups:
-    shot:
-      - GOAL
-      - SAVED SHOT
-      - MISSED SHOT
-      - SHOT ON POST
-      - TEMP GOAL
-      - TEMP ATTEMP
-      - CHANCE MISSED
     pass:
       - PASS
-      - OFFSIDE PASS
-      - LONG BALL
-      - CROSS
-      - KEY PASS
-      - THROUGHBALL
-      - PASS INTO OPP BOX
-      - PASS OPP HALF
-      - PASS OWN HALF
     tackle:
       - TACKLE
-      - TACKLE WITH POSSESSION
-      - TACKLE WITHOUT POSSESSION
-      - DISPOSSESSED
-    interception:
-      - INTERCEPTION
-      - BLOCKED PASS
-    out:
-      - OUT
-      - FOUL THROW IN
-      - GOAL KICK
-    corner:
-      - CORNER AWARDED
 
 pass_model:
   target: is_pass
@@ -136,14 +112,6 @@ pass_model:
   class_weight: balanced
   positive_labels:
     - PASS
-    - OFFSIDE PASS
-    - LONG BALL
-    - CROSS
-    - KEY PASS
-    - THROUGHBALL
-    - PASS INTO OPP BOX
-    - PASS OPP HALF
-    - PASS OWN HALF
   feature_columns:
     - period_id
     - match_clock_min
@@ -167,10 +135,5 @@ pass_model:
     - has_possession
     - player_count
     - visible_player_count
-    - mean_player_speed_mps
-    - max_player_speed_mps
-    - mean_reliable_player_speed_mps
-    - max_reliable_player_speed_mps
     - min_distance_to_ball_m
     - mean_distance_to_ball_m
-    - visible_player_share

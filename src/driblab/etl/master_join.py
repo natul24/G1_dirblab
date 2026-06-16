@@ -3,8 +3,8 @@
 This module contains the code that turns raw Driblab event and tracking files
 into the frame-level master join table used for modeling. It loads matched
 event/tracking files, normalizes tracking coordinates to the 0-100 pitch,
-matches events to tracking frames by match clock, filters reliable live-play
-frames, interpolates short ball gaps, creates ball/player/possession features,
+matches selected events to tracking frames by match clock, keeps every tracking
+frame, interpolates short ball gaps, creates ball/player/possession features,
 and writes `master_join_table.parquet` plus a compact summary.
 """
 
@@ -31,6 +31,15 @@ from driblab.etl.pipeline import (
 COORD_X_COLS = ["x", "x_start", "x_end"]
 COORD_Y_COLS = ["y", "y_start", "y_end"]
 SHOT_TYPES = ["GOAL", "SAVED SHOT", "MISSED SHOT", "SHOT ON POST"]
+DEFAULT_STEP2_EVENT_TYPES = (
+    "PASS",
+    "BALL TOUCH",
+    "AERIAL",
+    "TACKLE",
+    "BALL RECOVERY",
+    "FOUL",
+    "TAKEON",
+)
 
 
 @dataclass
@@ -43,9 +52,10 @@ class Step2Config:
     max_ball_gap_frames: int = 10
     possession_distance_m: float = 2.0
     possession_max_ball_speed_mps: float = 12.0
-    max_sync_tolerance_sec: float = 1.0
+    max_sync_tolerance_sec: float = 0.5
     direction_score_tolerance_sec: float = 0.30
     max_speed_dt_sec: float = 0.50
+    event_type_names: tuple[str, ...] = DEFAULT_STEP2_EVENT_TYPES
     save_player_features: bool = False
     save_match_outputs: bool = False
 
@@ -62,9 +72,10 @@ class Step2BatchConfig:
     max_ball_gap_frames: int = 10
     possession_distance_m: float = 2.0
     possession_max_ball_speed_mps: float = 12.0
-    max_sync_tolerance_sec: float = 1.0
+    max_sync_tolerance_sec: float = 0.5
     direction_score_tolerance_sec: float = 0.30
     max_speed_dt_sec: float = 0.50
+    event_type_names: tuple[str, ...] = DEFAULT_STEP2_EVENT_TYPES
     save_player_features: bool = False
     save_match_outputs: bool = False
 
@@ -249,6 +260,18 @@ def add_event_match_clock_seconds(
     events = df_events.copy()
     events["event_match_clock_seconds"] = _event_seconds(events)
     return events
+
+
+def filter_step2_events(
+    df_events: pd.DataFrame,
+    event_type_names: tuple[str, ...],
+) -> pd.DataFrame:
+    """Keep only event types used by the Step 2 modelling target."""
+    if not event_type_names:
+        return df_events.copy()
+    allowed = {event_type.upper() for event_type in event_type_names}
+    event_names = df_events["event.event_type_name"].astype(str).str.upper()
+    return df_events[event_names.isin(allowed)].copy()
 
 
 def match_events_to_frames(
@@ -453,16 +476,15 @@ def build_live_frame_features(
     max_ball_gap_frames: int,
     max_speed_dt_sec: float,
 ) -> pd.DataFrame:
-    live_frames = frame_df[frame_df["cam_present"]].copy()
-    live_frames = (
-        live_frames.sort_values(["period_id", "video_timestamp"])
+    frame_features = (
+        frame_df.sort_values(["period_id", "video_timestamp", "frame_id"])
         .reset_index(drop=True)
     )
 
     for axis in ("x", "y", "z"):
         raw_col = f"ball_{axis}_raw"
         clean_col = f"ball_{axis}"
-        live_frames[clean_col] = live_frames.groupby("period_id")[
+        frame_features[clean_col] = frame_features.groupby("period_id")[
             raw_col
         ].transform(
             lambda series: series.interpolate(
@@ -472,46 +494,53 @@ def build_live_frame_features(
             )
         )
 
-    live_frames["ball_present_raw"] = live_frames[
+    frame_features["ball_present_raw"] = frame_features[
         ["ball_x_raw", "ball_y_raw", "ball_z_raw"]
     ].notna().all(axis=1)
-    live_frames["ball_interpolated"] = (
-        ~live_frames["ball_present_raw"]
-        & live_frames[["ball_x", "ball_y", "ball_z"]].notna().all(axis=1)
+    frame_features["ball_interpolated"] = (
+        ~frame_features["ball_present_raw"]
+        & frame_features[["ball_x", "ball_y", "ball_z"]].notna().all(axis=1)
     )
 
-    live_frames["dt_sec"] = live_frames.groupby(
+    frame_features["dt_sec"] = frame_features.groupby(
         "period_id")["video_timestamp"].diff()
     for axis in ("x", "y", "z"):
-        live_frames[f"ball_d{axis}"] = live_frames.groupby("period_id")[
+        frame_features[f"ball_d{axis}"] = frame_features.groupby("period_id")[
             f"ball_{axis}"
         ].diff()
 
-    valid_dt = live_frames["dt_sec"].gt(
-        0) & live_frames["dt_sec"].le(max_speed_dt_sec)
-    live_frames["ball_speed_xy_mps"] = np.where(
+    previous_cam_present = frame_features.groupby("period_id")[
+        "cam_present"
+    ].shift(1).fillna(False)
+    valid_dt = (
+        frame_features["dt_sec"].gt(0)
+        & frame_features["dt_sec"].le(max_speed_dt_sec)
+        & frame_features["cam_present"]
+        & previous_cam_present
+    )
+    frame_features["ball_speed_xy_mps"] = np.where(
         valid_dt,
-        np.sqrt(live_frames["ball_dx"] ** 2 + live_frames["ball_dy"] ** 2)
-        / live_frames["dt_sec"],
+        np.sqrt(frame_features["ball_dx"] ** 2 + frame_features["ball_dy"] ** 2)
+        / frame_features["dt_sec"],
         np.nan,
     )
-    live_frames["ball_speed_mps"] = np.where(
+    frame_features["ball_speed_mps"] = np.where(
         valid_dt,
         np.sqrt(
-            live_frames["ball_dx"] ** 2
-            + live_frames["ball_dy"] ** 2
-            + live_frames["ball_dz"] ** 2
+            frame_features["ball_dx"] ** 2
+            + frame_features["ball_dy"] ** 2
+            + frame_features["ball_dz"] ** 2
         )
-        / live_frames["dt_sec"],
+        / frame_features["dt_sec"],
         np.nan,
     )
-    live_frames["ball_acceleration_mps2"] = (
-        live_frames.groupby("period_id")["ball_speed_mps"].diff()
-        / live_frames["dt_sec"]
+    frame_features["ball_acceleration_mps2"] = (
+        frame_features.groupby("period_id")["ball_speed_mps"].diff()
+        / frame_features["dt_sec"]
     )
-    live_frames.loc[~valid_dt, "ball_acceleration_mps2"] = np.nan
+    frame_features.loc[~valid_dt, "ball_acceleration_mps2"] = np.nan
 
-    return live_frames.drop(columns=["ball_dx", "ball_dy", "ball_dz"])
+    return frame_features.drop(columns=["ball_dx", "ball_dy", "ball_dz"])
 
 
 def build_player_features(
@@ -529,10 +558,13 @@ def build_player_features(
         frame_id = int(frame["frame"])
         if frame_id not in live_ids:
             continue
-        video_timestamp = float(frame["Videotimestamp"])
+        video_timestamp = frame.get("Videotimestamp")
+        video_timestamp = (
+            float(video_timestamp) if video_timestamp is not None else np.nan
+        )
         period_id = int(frame["period"])
 
-        for team_id, players in frame["data"].items():
+        for team_id, players in (frame.get("data") or {}).items():
             team_id_str = str(team_id)
             for player in players:
                 player_id = str(player.get("id"))
@@ -689,35 +721,17 @@ def _serialize_model_cell(value: Any) -> Any:
 
 def build_player_frame_aggregates(
         player_features: pd.DataFrame) -> pd.DataFrame:
-    """Collapse player-level rows into frame-level aggregate features."""
-    players = player_features.copy()
-    players["reliable_player_speed_mps"] = np.where(
-        players["player_speed_reliable"],
-        players["player_speed_mps"],
-        np.nan,
-    )
-
-    aggregates = (
-        players.groupby("frame_id")
+    """Collapse player-level rows into non-speed frame-level aggregates."""
+    return (
+        player_features.groupby("frame_id")
         .agg(
             player_count=("player_id", "size"),
             visible_player_count=("player_visible", "sum"),
-            mean_player_speed_mps=("player_speed_mps", "mean"),
-            max_player_speed_mps=("player_speed_mps", "max"),
-            mean_reliable_player_speed_mps=(
-                "reliable_player_speed_mps",
-                "mean",
-            ),
-            max_reliable_player_speed_mps=("reliable_player_speed_mps", "max"),
             min_distance_to_ball_m=("distance_to_ball_m", "min"),
             mean_distance_to_ball_m=("distance_to_ball_m", "mean"),
         )
         .reset_index()
     )
-    aggregates["visible_player_share"] = (
-        aggregates["visible_player_count"] / aggregates["player_count"]
-    )
-    return aggregates
 
 
 def build_event_frame_labels(
@@ -725,10 +739,7 @@ def build_event_frame_labels(
     raw_event_columns: list[str],
 ) -> pd.DataFrame:
     """Collapse aligned event rows into frame-level labels for modelling."""
-    events = df_events_aligned[
-        df_events_aligned["frame_id"].notna()
-        & df_events_aligned["matched_cam_present"].fillna(False)
-    ].copy()
+    events = df_events_aligned[df_events_aligned["frame_id"].notna()].copy()
     output_columns = [
         "frame_id",
         "event_count_at_frame",
@@ -1099,7 +1110,11 @@ def run_step2(config: Step2Config) -> dict[str, Any]:
     if not tracking_path.exists():
         raise FileNotFoundError(f"Missing tracking file: {tracking_path}")
 
-    df_events = pd.json_normalize(load_event_file(events_path))
+    df_events_raw = pd.json_normalize(load_event_file(events_path))
+    df_events = filter_step2_events(
+        df_events_raw,
+        tuple(config.event_type_names),
+    )
     tracking_header, tracking_frames = load_tracking_file(tracking_path)
 
     frame_df, video_clock_diagnostics = build_tracking_frame_table(
@@ -1231,6 +1246,7 @@ def run_step2_batch(config: Step2BatchConfig) -> dict[str, Any]:
                     config.direction_score_tolerance_sec
                 ),
                 max_speed_dt_sec=config.max_speed_dt_sec,
+                event_type_names=tuple(config.event_type_names),
                 save_player_features=config.save_player_features,
                 save_match_outputs=config.save_match_outputs,
             )

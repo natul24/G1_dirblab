@@ -21,9 +21,8 @@ baseline before moving to multiclass event detection.
 data/processed/model_base/master_join_table.parquet
 ```
 
-The input is the Step 2 master join table. It has one row per reliable live-play
-tracking frame. Event data is joined onto the tracking frame only to create the
-target label.
+The input is the Step 2 master join table. It has one row per tracking frame.
+Event data is joined onto the tracking frame only to create the target label.
 
 ## Target
 
@@ -39,8 +38,7 @@ is_pass
 The current positive labels are:
 
 ```text
-PASS, OFFSIDE PASS, LONG BALL, CROSS, KEY PASS, THROUGHBALL,
-PASS INTO OPP BOX, PASS OPP HALF, PASS OWN HALF
+PASS
 ```
 
 Rows with `event_label = "no event"` become negative examples.
@@ -64,7 +62,6 @@ join table, including:
 - nearest-player distance to the ball
 - raw possession flag
 - player-count and visibility aggregates
-- player-speed aggregates
 - player-to-ball distance aggregates
 
 The model does not use detailed event columns such as `event_type_name`,

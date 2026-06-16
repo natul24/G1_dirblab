@@ -163,38 +163,6 @@ PASS_FEATURE_LINEAGE: dict[str, dict[str, str]] = {
         "created_or_calculated": "Yes",
         "description": "Number of directly visible player rows.",
     },
-    "mean_player_speed_mps": {
-        "feature_kind": "calculated master-join feature",
-        "created_or_calculated": "Yes",
-        "description": (
-            "Average speed from current and previous frame positions, "
-            "including possible provider-estimated coordinates."
-        ),
-    },
-    "max_player_speed_mps": {
-        "feature_kind": "calculated master-join feature",
-        "created_or_calculated": "Yes",
-        "description": (
-            "Maximum speed from current and previous frame positions, "
-            "including possible provider-estimated coordinates."
-        ),
-    },
-    "mean_reliable_player_speed_mps": {
-        "feature_kind": "calculated master-join feature",
-        "created_or_calculated": "Yes",
-        "description": (
-            "Average speed using only players visible in both the current "
-            "and previous frame."
-        ),
-    },
-    "max_reliable_player_speed_mps": {
-        "feature_kind": "calculated master-join feature",
-        "created_or_calculated": "Yes",
-        "description": (
-            "Maximum speed using only players visible in both the current "
-            "and previous frame."
-        ),
-    },
     "min_distance_to_ball_m": {
         "feature_kind": "calculated master-join feature",
         "created_or_calculated": "Yes",
@@ -204,11 +172,6 @@ PASS_FEATURE_LINEAGE: dict[str, dict[str, str]] = {
         "feature_kind": "calculated master-join feature",
         "created_or_calculated": "Yes",
         "description": "Average player-to-ball distance in the frame.",
-    },
-    "visible_player_share": {
-        "feature_kind": "calculated master-join feature",
-        "created_or_calculated": "Yes",
-        "description": "Visible player count divided by player count.",
     },
 }
 
