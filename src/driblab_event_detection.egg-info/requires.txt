@@ -1,0 +1,9 @@
+numpy
+pandas
+matplotlib
+pyarrow
+pyyaml
+scikit-learn
+
+[dev]
+flake8
