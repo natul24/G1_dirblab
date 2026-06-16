@@ -10,7 +10,7 @@ models cannot beat these rules, the ML model is not adding value yet.
 
 ## What This Step Does
 
-For every reliable live-play tracking frame, Step 4:
+For every tracking frame, Step 4:
 
 1. Reads the Step 3 possession sequence table.
 2. Adds a few rule-specific lag and ball-movement features.
@@ -75,8 +75,9 @@ true_event_class
 ```
 
 It is created from `event_label` using `step4.label_groups` in `config.yaml`.
-For example, labels such as `PASS`, `CROSS`, and `KEY PASS` map to `pass`;
-labels such as `GOAL`, `SAVED SHOT`, and `MISSED SHOT` map to `shot`.
+Because Step 2 now limits labels to `PASS`, `BALL TOUCH`, `AERIAL`, `TACKLE`,
+`BALL RECOVERY`, `FOUL`, and `TAKEON`, the current configured groups map
+`PASS` to `pass` and `TACKLE` to `tackle`.
 
 If a provider event does not belong to any configured group, it becomes:
 
@@ -95,12 +96,13 @@ no event
 The detector predicts these classes:
 
 ```text
-no event, pass, interception, tackle, shot, out, corner, other_event
+no event, pass, tackle, other_event
 ```
 
-`other_event` is included in evaluation because the provider can label events
-outside the rule groups. The current rules do not actively predict
-`other_event`; they predict a rule class or leave the row as `no event`.
+`other_event` is included because the selected Step 2 labels include event
+types outside the configured `pass` and `tackle` groups, such as `BALL TOUCH`,
+`AERIAL`, `BALL RECOVERY`, `FOUL`, and `TAKEON`. Rule predictions outside the
+configured class list are collapsed to `other_event`.
 
 ## Rule Logic
 
@@ -116,13 +118,11 @@ Then the detector applies these rules.
 | Predicted class | Rule condition | Main columns used | Config threshold |
 | --- | --- | --- | --- |
 | `pass` | Smoothed possession changes to a different player on the same team. | `possession_player_change`, `possession_team_change` | None |
-| `interception` | Smoothed possession changes to the opponent and the ball is moving at or above the interception speed threshold. | `possession_team_change`, `ball_speed_mps` | `interception_min_ball_speed_mps` |
 | `tackle` | Smoothed possession changes to the opponent and the ball is moving below the interception speed threshold. | `possession_team_change`, `ball_speed_mps` | `interception_min_ball_speed_mps` |
-| `out` | Ball is near either touchline or goal line on the normalized pitch. | `ball_x`, `ball_y` | `boundary_margin` |
-| `corner` | Ball is near the goal line and near either corner area. | `ball_x`, `ball_y` | `boundary_margin`, `corner_y_margin` |
-| `shot` | Ball is fast, already in an advanced attacking x location, and moving toward the attacking goal. | `ball_speed_mps`, `ball_x_attacking`, `rule_ball_dx_attacking` | `shot_min_speed_mps`, `shot_min_attacking_x`, `shot_min_dx_attacking` |
+| `other_event` | A rule fires for a class outside the configured class list, or the true Step 2 label is selected but not mapped to `pass` or `tackle`. | rule output, `event_label` | `step4.rule_classes` |
 
-The current implementation writes predictions in this order:
+The rule engine still calculates broader football-rule candidates in this
+order:
 
 1. teammate player change -> `pass`
 2. fast opponent gain -> `interception`
@@ -131,9 +131,8 @@ The current implementation writes predictions in this order:
 5. corner -> `corner`
 6. fast attacking ball -> `shot`
 
-Because later assignments can overwrite earlier ones, `shot` has the highest
-priority in the current implementation, then `corner`, then `out`, then
-possession-change rules.
+Because `step4.rule_classes` currently excludes `interception`, `out`,
+`corner`, and `shot`, those candidate predictions are saved as `other_event`.
 
 ## Current Thresholds
 
