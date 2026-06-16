@@ -75,16 +75,6 @@ def run_step2(args: argparse.Namespace, config: dict[str, Any]) -> None:
         model_base_dir=_path(config, "model_base_dir"),
         match_id=args.match_id or str(step_config["match_id"]),
         all_matches=all_matches,
-        max_ball_gap_frames=int(step_config["max_ball_gap_frames"]),
-        possession_distance_m=float(step_config["possession_distance_m"]),
-        possession_max_ball_speed_mps=float(
-            step_config["possession_max_ball_speed_mps"]
-        ),
-        max_sync_tolerance_sec=float(step_config["max_sync_tolerance_sec"]),
-        direction_score_tolerance_sec=float(
-            step_config["direction_score_tolerance_sec"]
-        ),
-        max_speed_dt_sec=float(step_config["max_speed_dt_sec"]),
         event_type_names=tuple(step_config.get("event_type_names", [])),
     )
     result = run_step2_batch(batch_config)

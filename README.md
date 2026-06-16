@@ -353,44 +353,28 @@ The project column dictionary is in
 The Step 2 notebook walkthrough is in
 [`notebooks/step2_3_match_clock_join.ipynb`](notebooks/step2_3_match_clock_join.ipynb).
 
-All pipeline paths, match splits, and Step 2 event labels are configured in
-`config.yaml`.
+All pipeline paths and match splits are configured in `config.yaml`.
 
 ## Coordinate Handling
 
 Step 1 ETL validates the two coordinate systems before Step 2 joins the data.
 Events already arrive on the provider's normalized `0-100` attacking-direction
-scale, so ETL does not rescale event coordinates. Tracking arrives in physical
-meters on a `105 x 68` pitch, so ETL creates normalized tracking x/y columns for
-comparison.
+scale, so ETL does not rescale event coordinates. Tracking arrives in its raw
+tracking coordinate system, so ETL can create normalized tracking x/y tables for
+inspection only.
 
 | Source | Remained the same | Normalized / added |
 | --- | --- | --- |
 | Events | `x`, `y`, `x_start`, `y_start`, `x_end`, `y_end` stay as provided on the `0-100` attacking-direction scale | None in ETL |
-| Tracking ball | `ball_x_raw_m`, `ball_y_raw_m`, `ball_z_raw_m` keep the original meter values in the ETL notebook tables | `ball_x_norm`, `ball_y_norm` convert x/y meters to `0-100` |
-| Tracking players | `player_x_raw_m`, `player_y_raw_m` keep the original meter values in the ETL notebook tables | `player_x_norm`, `player_y_norm` convert x/y meters to `0-100` |
+| Tracking ball | Raw `ball` values are unpacked in Step 2 as `t.ball_x`, `t.ball_y`, `t.ball_z` | ETL QA only may show `ball_x_norm`, `ball_y_norm` |
+| Tracking players | Raw nested player values are unpacked in Step 2 as repeated `t.player_XX_*` columns | ETL QA only may show normalized player x/y |
 | Ball height | `ball_z_raw_m` remains meters | Not normalized |
 
-In Step 2, event coordinates are still kept as event columns. Tracking ball x/y
-columns are the ones converted for modelling, including attacking-perspective
-tracking columns such as `ball_x_attacking` and `ball_y_attacking`.
-
-The modelling convention is `x = 0` at the reference team's own-goal side and
-`x = 100` at the goal the reference team is attacking. Event coordinates already
-use that provider convention. Tracking coordinates start in meters, so Step 2
-normalizes saved tracking x/y fields with:
-
-```text
-tracking_x_0_100 = clip(tracking_x_m / 105 * 100, 0, 100)
-tracking_y_0_100 = clip(tracking_y_m / 68 * 100, 0, 100)
-```
-
-`ball_x_attacking` is a tracking-derived coordinate read from the reference
-team's attacking direction. A value of `0` means close to that team's own goal,
-`100` means close to the goal that team is attacking, and `20` means the ball is
-about 20% up the pitch from that team's own goal. The reference team is chosen
-in Step 2 as event team first, then possession team, then nearest team to the
-ball; the chosen source is stored in `tracking_reference_source`.
+Step 2 preserves both sources as raw columns. Event columns keep the provider
+`0-100` attacking-direction coordinates in `e.*` fields. Tracking coordinates
+are unpacked into `t.ball_*` and `t.player_XX_*` columns; they are not
+normalized, flipped, or converted into attacking-direction features in the
+master join.
 
 ## Current Outputs
 
@@ -407,18 +391,25 @@ data/processed/model_base/master_join_table.parquet
 ```
 
 That combined Parquet table has one row per tracking frame across every match,
-with tracking/ball/possession/player aggregate features and the matched event
-columns joined onto frames where events occur. Event columns are prefixed with
-`event_`; frames without a matched event are labelled `no event` in
-`event_label` and `event_type_name`. Step 2 currently labels only `PASS`,
-`BALL TOUCH`, `AERIAL`, `TACKLE`, `BALL RECOVERY`, `FOUL`, and `TAKEON`;
-other provider events remain `no event` rows in this modelling table. Events
-are joined to tracking using match-clock time only: `period_id + min/sec/milisec`
-matched to the closest tracking `period + match_clock + frame_index/FPS` row
-within `0.5` seconds. This nearest-frame sync is the timestamp drift-correction
-step.
-Field x/y coordinates are kept on a normalized `0-100` scale for modelling;
-raw tracking meter coordinates are converted and clipped into that range.
+with original tracking columns prefixed as `t.*` and original flattened event
+columns prefixed as `e.*`. Frames without an attached event have event columns
+filled with `"no event"`. Step 2 adds `t.match_id` from the source filename so
+every row can still be grouped by match when `e.match_id` is `"no event"`.
+The raw nested `ball` and `data` tracking fields are not kept as packed columns
+in the master join. Their key position fields are unpacked into `t.ball_x`,
+`t.ball_y`, `t.ball_z`, and repeated `t.player_XX_*` player slot columns.
+
+Step 2 only attaches the event types that cumulatively cover about 91% of the
+current raw events: `PASS`, `BALL TOUCH`, `AERIAL`, `TACKLE`, `BALL RECOVERY`,
+`FOUL`, and `TAKEON`. Lower-frequency provider events are treated like no-event
+frames in the master join.
+
+Events are joined to tracking using match-clock time only:
+`period_id + min/sec/milisec` is matched to the closest tracking
+`period + match_clock + frame_index/FPS` row in the same period. There is no
+tolerance window. The nearest-frame distance is saved in
+`nearest_timestamp_distance_sec`, and if multiple events choose the same frame,
+only the event with the smallest distance is kept.
 
 ## Next ML Stages
 
