@@ -94,7 +94,7 @@ Use the `driblabvenv` kernel and run notebooks in this order:
 
 ```text
 notebooks/ETL.ipynb
-notebooks/step2_3_match_clock_join.ipynb
+notebooks/master_join_walkthrough.ipynb
 ```
 
 7. Read the markdown documentation.
@@ -104,7 +104,7 @@ outputs. They explain the pipeline logic and the columns produced by the
 commands above:
 
 ```text
-docs/step2_foundation.md
+docs/master_join_walkthrough.md
 docs/data_dictionary.md
 ```
 
@@ -135,11 +135,11 @@ python -m flake8 .
 │   └── reference/
 ├── docs/
 │   ├── data_dictionary.md
-│   ├── step2_foundation.md
+│   ├── master_join_walkthrough.md
 ├── notebooks/
 │   ├── ETL.ipynb
 │   ├── data_exploration.ipynb
-│   └── step2_3_match_clock_join.ipynb
+│   └── master_join_walkthrough.ipynb
 ├── reports/
 │   └── figures/
 ├── src/
@@ -347,11 +347,11 @@ python main.py step2
 ```
 
 Detailed Step 2 logic is documented in
-[`docs/step2_foundation.md`](docs/step2_foundation.md).
+[`docs/master_join_walkthrough.md`](docs/master_join_walkthrough.md).
 The project column dictionary is in
 [`docs/data_dictionary.md`](docs/data_dictionary.md).
-The Step 2 notebook walkthrough is in
-[`notebooks/step2_3_match_clock_join.ipynb`](notebooks/step2_3_match_clock_join.ipynb).
+The master join walkthrough notebook is in
+[`notebooks/master_join_walkthrough.ipynb`](notebooks/master_join_walkthrough.ipynb).
 
 All pipeline paths and match splits are configured in `config.yaml`.
 
