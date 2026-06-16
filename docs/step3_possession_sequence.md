@@ -15,9 +15,11 @@ possession sequences.
 data/processed/model_base/master_join_table.parquet
 ```
 
-The input is still one row per reliable live-play tracking frame across all
-matches. It includes `match_id`, tracking/ball features, nearest-player features,
-and joined event labels.
+The input is still one row per tracking frame across all matches. It includes
+`match_id`, tracking/ball features, nearest-player features, and joined event
+labels. Step 2 labels are limited to `PASS`, `BALL TOUCH`, `AERIAL`, `TACKLE`,
+`BALL RECOVERY`, `FOUL`, and `TAKEON`; other provider events remain `no event`
+rows for this modelling table.
 
 ## Match Splits
 

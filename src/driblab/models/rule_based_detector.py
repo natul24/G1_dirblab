@@ -172,6 +172,11 @@ def predict_rule_based_events(
     predictions.loc[near_touchline | near_goal_line] = "out"
     predictions.loc[near_corner] = "corner"
     predictions.loc[shot_rule] = "shot"
+    allowed_prediction_classes = set(config.rule_classes)
+    predictions = predictions.where(
+        predictions.isin(allowed_prediction_classes),
+        "other_event",
+    )
 
     output["rule_event_class"] = predictions
     output["rule_reason"] = np.select(

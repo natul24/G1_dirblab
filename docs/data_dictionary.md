@@ -49,17 +49,17 @@ Current output widths:
 
 | Table | Columns |
 | --- | ---: |
-| Master join table | 86 |
-| Smoothed possession sequence table | 106 |
-| Rule-based predictions table | 113 |
+| Master join table | 81 |
+| Smoothed possession sequence table | 101 |
+| Rule-based predictions table | 108 |
 
 ## Main Tables
 
 | Table | Path | Grain | Purpose |
 | --- | --- | --- | --- |
-| Master join table | `data/processed/model_base/master_join_table.parquet` | One row per reliable live-play tracking frame | Step 2 output. This is the base table that joins tracking, event labels, ball features, player-distance features, and attacking-direction coordinates. |
-| Smoothed possession sequence table | `data/processed/possession_sequence/possession_sequence_table.parquet` | One row per reliable live-play tracking frame | Step 3 output. It keeps all master join columns and adds smoothed possession assignment, possession-change, and possession-sequence columns. |
-| Rule-based predictions table | `data/processed/rule_based_detection/rule_based_predictions.parquet` | One row per reliable live-play tracking frame | Step 4 output. It keeps all smoothed possession sequence columns and adds rule features, true event class, predicted event class, and rule reason. |
+| Master join table | `data/processed/model_base/master_join_table.parquet` | One row per tracking frame | Step 2 output. This is the base table that joins tracking, selected event labels, ball features, player-distance features, and attacking-direction coordinates. |
+| Smoothed possession sequence table | `data/processed/possession_sequence/possession_sequence_table.parquet` | One row per tracking frame | Step 3 output. It keeps all master join columns and adds smoothed possession assignment, possession-change, and possession-sequence columns. |
+| Rule-based predictions table | `data/processed/rule_based_detection/rule_based_predictions.parquet` | One row per tracking frame | Step 4 output. It keeps all smoothed possession sequence columns and adds rule features, true event class, predicted event class, and rule reason. |
 
 ## Coordinate Rules
 
@@ -70,6 +70,28 @@ Current output widths:
 | Ball z coordinate | Ball height stays in meters. It is renamed to `ball_z_m` or `ball_z_m_raw`; it is not normalized to `0` to `100`. |
 | Attacking tracking coordinates | `*_attacking` columns flip tracking x when needed so that the relevant reference team attacks toward `x = 100`. Y is not flipped. |
 | Reference team for attacking orientation | Step 2 uses `event_team_id` when available, then `possessing_team_id`, then `nearest_team_id`. This decision is stored in `tracking_reference_source`. |
+
+The modelling convention is:
+
+```text
+x = 0      defensive goal / own-goal side
+x = 100    attacking goal
+y = 0      one touchline
+y = 100    opposite touchline
+```
+
+Tracking x/y values start in meters and are normalized before being saved in the
+master join table:
+
+```text
+tracking_x_0_100 = clip(tracking_x_m / 105 * 100, 0, 100)
+tracking_y_0_100 = clip(tracking_y_m / 68 * 100, 0, 100)
+```
+
+For attacking-perspective tracking columns, Step 2 keeps `ball_x_attacking =
+ball_x` when the reference team attacks in the physical `+x` direction and uses
+`ball_x_attacking = 100 - ball_x` when the reference team attacks in the
+physical `-x` direction.
 
 ## Label Rules
 
@@ -87,18 +109,28 @@ Current output widths:
 These columns appear in `master_join_table.parquet`. They are also inherited by
 the Step 3 smoothed possession sequence table and Step 4 rule-based prediction table.
 
-### Player Speed Timing Rule
+### Player Tracking Rule
 
-All player-speed columns are frame-to-frame calculations. For a row at frame
-`t`, player speed is calculated from that player's position in the current frame
-`t` and the previous frame `t-1`, divided by the time difference `dt_sec`.
-The current Step 2 features do not use the next frame `t+1`, so these features
-remain causal for prediction.
+Step 2 uses player positions to identify the nearest player to the ball and to
+create frame-level player availability and distance-to-ball aggregates. Player
+speed aggregates are not stored in the master join table.
 
-Regular player-speed aggregates use all player rows with valid timing, including
-rows where the provider supplied a coordinate even though the player was not
-directly visible. Reliable player-speed aggregates only use rows where the
-player was directly visible in both frame `t` and frame `t-1`.
+### Ball Speed Timing Rule
+
+Ball speed and acceleration are also frame-to-frame calculations. For ball
+features, a consecutive frame means the next tracking row in the same
+`period_id` after sorting by `video_timestamp`; it is not simply `frame_id + 1`.
+Step 2 keeps all tracking rows, interpolates short ball gaps, and then
+calculates `dt_sec` from the previous tracking row in the same period.
+
+The timing gap is considered valid only when `0 < dt_sec <= max_speed_dt_sec`.
+The default `max_speed_dt_sec` is `0.50` seconds. Ball speed and acceleration
+are set to missing for larger gaps so missing tracking stretches do not create
+artificial speed spikes.
+
+`ball_acceleration_mps2` is calculated as change in 3D ball speed divided by
+`dt_sec`: `(current ball_speed_mps - previous ball_speed_mps) / dt_sec`. It is
+therefore a speed-change acceleration, not a full x/y/z acceleration vector.
 
 | Column | Type | Source | Description |
 | --- | --- | --- | --- |
@@ -108,7 +140,7 @@ player was directly visible in both frame `t` and frame `t-1`.
 | `match_clock_min` | integer | Tracking | Minute component of the tracking match clock. This clock counts match time and does not reset at half-time in the current data. |
 | `match_clock_sec` | integer | Tracking | Second component of the tracking match clock. |
 | `video_timestamp` | float | Tracking | Video timestamp in seconds from the tracking feed. Used for frame-to-frame time differences and speed calculations. |
-| `cam_present` | boolean | Tracking | Whether the tracking frame has camera/live-play data available. Step 2 keeps reliable live-play frames where this is true. |
+| `cam_present` | boolean | Tracking | Whether the tracking frame has camera/live-play data available. Step 2 keeps all tracking rows and uses this field to mark whether speed/possession calculations are reliable. |
 | `ball_x_raw` | float | Tracking, normalized | Ball x position after converting the original tracking x coordinate to the `0-100` pitch scale. Despite the `_raw` suffix, this saved column is normalized. |
 | `ball_y_raw` | float | Tracking, normalized | Ball y position after converting the original tracking y coordinate to the `0-100` pitch scale. Despite the `_raw` suffix, this saved column is normalized. |
 | `ball_z_m_raw` | float | Tracking | Raw ball height in meters before interpolation. This is not normalized. |
@@ -118,10 +150,10 @@ player was directly visible in both frame `t` and frame `t-1`.
 | `ball_z_m` | float | Tracking/interpolated | Ball height in meters after short-gap interpolation. Not normalized. |
 | `ball_present_raw` | boolean | Tracking-derived | True when raw ball x, y, and z were all present before interpolation. |
 | `ball_interpolated` | boolean | Tracking-derived | True when raw ball data was missing but Step 2 filled the ball x/y/z values using short-gap linear interpolation. |
-| `dt_sec` | float | Tracking-derived | Time difference in seconds from the previous live frame in the same period, based on `video_timestamp`. |
+| `dt_sec` | float | Tracking-derived | Time difference in seconds from the previous tracking row in the same period, based on `video_timestamp`. |
 | `ball_speed_xy_mps` | float | Tracking-derived | Ball speed in meters per second using only horizontal x/y movement: `sqrt(dx^2 + dy^2) / dt_sec`. Calculated before saved x/y normalization. |
 | `ball_speed_mps` | float | Tracking-derived | Ball speed in meters per second using x, y, and z movement: `sqrt(dx^2 + dy^2 + dz^2) / dt_sec`. |
-| `ball_acceleration_mps2` | float | Tracking-derived | Frame-to-frame change in `ball_speed_mps` divided by `dt_sec`. |
+| `ball_acceleration_mps2` | float | Tracking-derived | Frame-to-frame change in `ball_speed_mps` divided by `dt_sec`: `(current speed - previous speed) / dt_sec`. |
 | `nearest_team_id` | string | Tracking-derived from players + ball | Team ID of the player nearest to the ball in that frame. |
 | `nearest_team_name` | string | Tracking metadata + nearest player | Team name of the player nearest to the ball. |
 | `nearest_player_id` | string | Tracking-derived from players + ball | Player ID of the player nearest to the ball in that frame. |
@@ -135,13 +167,8 @@ player was directly visible in both frame `t` and frame `t-1`.
 | `possessing_player_name` | string | Tracking-derived | Player name assigned raw possession when `has_possession` is true; missing otherwise. |
 | `player_count` | integer | Tracking-derived aggregate | Number of player rows available for the frame. Usually players from both teams. |
 | `visible_player_count` | integer | Tracking-derived aggregate | Number of players in the frame with `player_visible = True`. |
-| `mean_player_speed_mps` | float | Tracking-derived aggregate | Average player speed in meters per second across all player rows with valid timing from the current frame `t` and previous frame `t-1`. This can include speeds calculated from provider-estimated/non-visible player coordinates. |
-| `max_player_speed_mps` | float | Tracking-derived aggregate | Maximum player speed in meters per second among all player rows with valid timing from the current frame `t` and previous frame `t-1`. This can include speeds calculated from provider-estimated/non-visible player coordinates. |
-| `mean_reliable_player_speed_mps` | float | Tracking-derived aggregate | Average player speed using only player rows where `dt_sec` was valid and the player was directly visible in both the current frame and the previous frame. Reliable means both positions used in the speed calculation were directly observed, not provider-estimated/non-visible coordinates. |
-| `max_reliable_player_speed_mps` | float | Tracking-derived aggregate | Maximum player speed using only rows where `dt_sec` was valid and the player was directly visible in both the current frame and the previous frame. Uses the same reliability rule as `mean_reliable_player_speed_mps`. |
 | `min_distance_to_ball_m` | float | Tracking-derived aggregate | Minimum player-to-ball distance in meters across all players in the frame. Equivalent to the nearest-player distance when valid. |
 | `mean_distance_to_ball_m` | float | Tracking-derived aggregate | Average player-to-ball distance in meters across all players in the frame. |
-| `visible_player_share` | float | Tracking-derived aggregate | `visible_player_count / player_count`. Measures how much of the player tracking in that frame was directly visible. |
 | `event_count_at_frame` | integer | Event-to-frame aggregation | Number of provider events matched to this tracking frame. `0` means no provider event matched. |
 | `event_type_names_at_frame` | string | Event-to-frame aggregation | Pipe-separated provider event names matched to this frame, such as `PASS|BALL TOUCH`. Filled as `"no event"` when no event matched. |
 | `event_type_ids_at_frame` | string | Event-to-frame aggregation | Pipe-separated provider event type IDs matched to this frame. Empty string when no event matched. |
@@ -273,7 +300,7 @@ from the original join from fields calculated during Step 2.
 | `ball_z_m` | Calculated master-join feature | Yes | Ball height after short-gap interpolation. |
 | `ball_present_raw` | Calculated master-join feature | Yes | Flag that raw ball x/y/z were present. |
 | `ball_interpolated` | Calculated master-join feature | Yes | Flag that Step 2 filled a short ball gap. |
-| `dt_sec` | Calculated master-join feature | Yes | Seconds elapsed since the previous live frame. |
+| `dt_sec` | Calculated master-join feature | Yes | Seconds elapsed since the previous tracking frame in the same period. |
 | `ball_speed_xy_mps` | Calculated master-join feature | Yes | Horizontal ball speed calculated in meters/second. |
 | `ball_speed_mps` | Calculated master-join feature | Yes | 3D ball speed calculated in meters/second. |
 | `ball_acceleration_mps2` | Calculated master-join feature | Yes | Frame-to-frame ball acceleration. |
@@ -282,13 +309,8 @@ from the original join from fields calculated during Step 2.
 | `has_possession` | Calculated master-join feature | Yes | Raw possession flag from distance and ball speed. |
 | `player_count` | Calculated master-join feature | Yes | Number of player rows available in the frame. |
 | `visible_player_count` | Calculated master-join feature | Yes | Number of directly visible player rows. |
-| `mean_player_speed_mps` | Calculated master-join feature | Yes | Average speed across all player rows with valid timing from the current frame `t` and previous frame `t-1`, including possible provider-estimated/non-visible coordinates. |
-| `max_player_speed_mps` | Calculated master-join feature | Yes | Maximum speed across all player rows with valid timing from the current frame `t` and previous frame `t-1`, including possible provider-estimated/non-visible coordinates. |
-| `mean_reliable_player_speed_mps` | Calculated master-join feature | Yes | Average speed using only players directly visible in both the current and previous frame. |
-| `max_reliable_player_speed_mps` | Calculated master-join feature | Yes | Maximum speed using only players directly visible in both the current and previous frame. |
 | `min_distance_to_ball_m` | Calculated master-join feature | Yes | Minimum player-to-ball distance in the frame. |
 | `mean_distance_to_ball_m` | Calculated master-join feature | Yes | Average player-to-ball distance in the frame. |
-| `visible_player_share` | Calculated master-join feature | Yes | Visible player count divided by player count. |
 
 ### Pass Model Created Columns
 
@@ -311,7 +333,7 @@ Path: `data/processed/model_base/master_join_summary.csv`
 | Column | Description |
 | --- | --- |
 | `match_id` | Match identifier. |
-| `master_join_table_rows` | Number of live tracking rows in the master join table for the match. |
+| `master_join_table_rows` | Number of tracking rows in the master join table for the match. |
 | `master_join_event_rows` | Number of master join rows where at least one event matched. |
 | `aligned_events` | Number of provider event rows processed for event-to-frame alignment. |
 | `matched_events` | Number of provider events that found a tracking frame within the configured join tolerance. |
