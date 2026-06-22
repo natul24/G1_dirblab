@@ -34,11 +34,17 @@ OUTPUT_COLUMNS = [
     "ball_y_avg",
     "ball_z_avg",
     "ball_speed_avg",
+    "ball_speed_change",
     "closest_player_dist_start",
     "closest_player_team_start",
     "closest_player_dist_end",
     "closest_player_team_end",
+    "closest_player_dist_change",
     "player_changed_same_team",
+    "team_changed",
+    "n_players_near_ball",
+    "ball_displacement_x",
+    "ball_displacement_y",
 ]
 
 BALL_COLUMNS = ["t.ball_x", "t.ball_y", "t.ball_z"]
@@ -51,6 +57,35 @@ SPLIT_COLUMN = "data_split"
 WINDOW_SIZE = 5
 WINDOW_SECONDS = 0.5
 UNKNOWN_TEAM = "unknown"
+NEAR_BALL_RADIUS = 5.0
+
+NUMERIC_FEATURES = [
+    "ball_x_avg",
+    "ball_y_avg",
+    "ball_z_avg",
+    "ball_speed_avg",
+    "ball_speed_change",
+    "closest_player_dist_start",
+    "closest_player_dist_end",
+    "closest_player_dist_change",
+    "n_players_near_ball",
+    "ball_displacement_x",
+    "ball_displacement_y",
+]
+
+FEATURE_CLIP_BOUNDS: dict[str, tuple[float, float]] = {
+    "ball_x_avg": (-5, 110),
+    "ball_y_avg": (-5, 73),
+    "ball_z_avg": (0, 10),
+    "ball_speed_avg": (0, 50),
+    "ball_speed_change": (-50, 50),
+    "closest_player_dist_start": (0, 130),
+    "closest_player_dist_end": (0, 130),
+    "closest_player_dist_change": (-130, 130),
+    "n_players_near_ball": (0, 22),
+    "ball_displacement_x": (-110, 110),
+    "ball_displacement_y": (-110, 110),
+}
 
 
 def load_training_inputs(
@@ -81,6 +116,23 @@ def compute_window_features(
     end_player = _closest_visible_player(last_frame)
     primary_event, secondary_events = _window_events(window_frames)
 
+    ball_values = window_frames[BALL_COLUMNS].apply(
+        pd.to_numeric, errors="coerce",
+    )
+    deltas = ball_values.diff().iloc[1:]
+    frame_speeds = np.sqrt((deltas**2).sum(axis=1, skipna=False))
+    ball_speed_change = (
+        float(frame_speeds.iloc[-1] - frame_speeds.iloc[0])
+        if len(frame_speeds) >= 2
+        else 0.0
+    )
+
+    team_changed = int(
+        start_player["team_id"] != UNKNOWN_TEAM
+        and end_player["team_id"] != UNKNOWN_TEAM
+        and start_player["team_id"] != end_player["team_id"]
+    )
+
     return {
         "t.match_id": str(first_frame[MATCH_COLUMN]),
         "t.period": first_frame[PERIOD_COLUMN],
@@ -90,25 +142,35 @@ def compute_window_features(
         "is_pass": int(primary_event == "PASS"),
         "secondary_events": secondary_events,
         "ball_x_avg": pd.to_numeric(
-            window_frames["t.ball_x"],
-            errors="coerce",
+            window_frames["t.ball_x"], errors="coerce",
         ).mean(),
         "ball_y_avg": pd.to_numeric(
-            window_frames["t.ball_y"],
-            errors="coerce",
+            window_frames["t.ball_y"], errors="coerce",
         ).mean(),
         "ball_z_avg": pd.to_numeric(
-            window_frames["t.ball_z"],
-            errors="coerce",
+            window_frames["t.ball_z"], errors="coerce",
         ).mean(),
         "ball_speed_avg": _ball_speed_avg(window_frames),
+        "ball_speed_change": ball_speed_change,
         "closest_player_dist_start": start_player["distance"],
         "closest_player_team_start": start_player["team_id"],
         "closest_player_dist_end": end_player["distance"],
         "closest_player_team_end": end_player["team_id"],
+        "closest_player_dist_change": (
+            end_player["distance"] - start_player["distance"]
+        ),
         "player_changed_same_team": _player_changed_same_team(
-            start_player,
-            end_player,
+            start_player, end_player,
+        ),
+        "team_changed": team_changed,
+        "n_players_near_ball": _avg_players_near_ball(window_frames),
+        "ball_displacement_x": (
+            _to_float(last_frame.get("t.ball_x"))
+            - _to_float(first_frame.get("t.ball_x"))
+        ),
+        "ball_displacement_y": (
+            _to_float(last_frame.get("t.ball_y"))
+            - _to_float(first_frame.get("t.ball_y"))
         ),
     }
 
@@ -145,6 +207,17 @@ def build_training_table_for_split(
             warnings.simplefilter("ignore", category=RuntimeWarning)
             ball_means = np.nanmean(window_ball, axis=1)
             ball_speeds = _window_ball_speeds(window_ball)
+            frame_deltas = np.diff(window_ball, axis=1)
+            frame_spds = np.sqrt(np.sum(frame_deltas**2, axis=2))
+            ball_speed_changes = frame_spds[:, -1] - frame_spds[:, 0]
+            ball_displacements_x = window_ball[:, -1, 0] - window_ball[:, 0, 0]
+            ball_displacements_y = window_ball[:, -1, 1] - window_ball[:, 0, 1]
+
+        near_ball_per_frame = _count_players_near_ball(complete_period)
+        near_ball_per_window = near_ball_per_frame.reshape(
+            window_count, WINDOW_SIZE,
+        )
+        n_players_near_ball_avg = np.mean(near_ball_per_window, axis=1)
 
         closest_players = _closest_visible_players(complete_period)
         event_types = (
@@ -186,13 +259,27 @@ def build_training_table_for_split(
                     "ball_y_avg": ball_means[window_idx, 1],
                     "ball_z_avg": ball_means[window_idx, 2],
                     "ball_speed_avg": ball_speeds[window_idx],
+                    "ball_speed_change": ball_speed_changes[window_idx],
                     "closest_player_dist_start": start_player["distance"],
                     "closest_player_team_start": start_player["team_id"],
                     "closest_player_dist_end": end_player["distance"],
                     "closest_player_team_end": end_player["team_id"],
+                    "closest_player_dist_change": (
+                        end_player["distance"] - start_player["distance"]
+                    ),
                     "player_changed_same_team": (
                         _player_changed_same_team(start_player, end_player)
                     ),
+                    "team_changed": int(
+                        start_player["team_id"] != UNKNOWN_TEAM
+                        and end_player["team_id"] != UNKNOWN_TEAM
+                        and start_player["team_id"] != end_player["team_id"]
+                    ),
+                    "n_players_near_ball": n_players_near_ball_avg[
+                        window_idx
+                    ],
+                    "ball_displacement_x": ball_displacements_x[window_idx],
+                    "ball_displacement_y": ball_displacements_y[window_idx],
                 }
             )
 
@@ -218,13 +305,17 @@ def build_all_training_tables(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     master_join, _ = load_training_inputs(master_join_path, config_path)
-    outputs: dict[str, pd.DataFrame] = {}
+    raw_tables: dict[str, pd.DataFrame] = {}
 
     for split_name in match_splits.SPLIT_NAMES:
-        training_table = build_training_table_for_split(
+        raw_tables[split_name] = build_training_table_for_split(
             master_join,
             split_name,
         )
+
+    outputs = _normalize_tables(raw_tables, output_dir)
+
+    for split_name, training_table in outputs.items():
         table_path = output_dir / f"training_table_{split_name}.parquet"
         summary_path = output_dir / f"training_table_summary_{split_name}.csv"
         training_table.to_parquet(table_path, index=False)
@@ -232,7 +323,6 @@ def build_all_training_tables(
             summary_path,
             index=False,
         )
-        outputs[split_name] = training_table
         LOGGER.info(
             "Wrote %s windows for %s to %s",
             len(training_table),
@@ -337,6 +427,31 @@ def _closest_visible_player(frame: pd.Series) -> dict[str, Any]:
     return closest
 
 
+def _avg_players_near_ball(window_frames: pd.DataFrame) -> float:
+    """Average number of visible players within NEAR_BALL_RADIUS of ball."""
+    counts = []
+    for _, frame in window_frames.iterrows():
+        ball_x = _to_float(frame.get("t.ball_x"))
+        ball_y = _to_float(frame.get("t.ball_y"))
+        if pd.isna(ball_x) or pd.isna(ball_y):
+            counts.append(0)
+            continue
+        count = 0
+        for prefix in _player_prefixes(frame.index):
+            if not _is_visible(frame.get(f"{prefix}_visible")):
+                continue
+            if pd.isna(frame.get(f"{prefix}_team_id")):
+                continue
+            px = _to_float(frame.get(f"{prefix}_x"))
+            py = _to_float(frame.get(f"{prefix}_y"))
+            if pd.isna(px) or pd.isna(py):
+                continue
+            if np.hypot(px - ball_x, py - ball_y) < NEAR_BALL_RADIUS:
+                count += 1
+        counts.append(count)
+    return float(np.mean(counts))
+
+
 def _unknown_player() -> dict[str, Any]:
     return {"distance": np.nan, "team_id": UNKNOWN_TEAM, "player_id": None}
 
@@ -401,6 +516,44 @@ def _unknown_player_arrays(row_count: int) -> dict[str, np.ndarray]:
         "team_id": np.full(row_count, UNKNOWN_TEAM, dtype=object),
         "player_id": np.full(row_count, None, dtype=object),
     }
+
+
+def _count_players_near_ball(
+    period_frames: pd.DataFrame,
+) -> np.ndarray:
+    """Count visible players within NEAR_BALL_RADIUS of ball per frame."""
+    prefixes = _player_prefixes(period_frames.columns)
+    if not prefixes:
+        return np.zeros(len(period_frames))
+
+    x_columns = [f"{prefix}_x" for prefix in prefixes]
+    y_columns = [f"{prefix}_y" for prefix in prefixes]
+    visible_columns = [f"{prefix}_visible" for prefix in prefixes]
+    team_columns = [f"{prefix}_team_id" for prefix in prefixes]
+
+    player_x = period_frames[x_columns].apply(
+        pd.to_numeric, errors="coerce",
+    ).to_numpy(dtype=float)
+    player_y = period_frames[y_columns].apply(
+        pd.to_numeric, errors="coerce",
+    ).to_numpy(dtype=float)
+    ball_x = pd.to_numeric(
+        period_frames["t.ball_x"], errors="coerce",
+    ).to_numpy(dtype=float)[:, np.newaxis]
+    ball_y = pd.to_numeric(
+        period_frames["t.ball_y"], errors="coerce",
+    ).to_numpy(dtype=float)[:, np.newaxis]
+
+    visible = period_frames[visible_columns].apply(
+        lambda column: column.map(_is_visible),
+    ).to_numpy(dtype=bool)
+    team_values = period_frames[team_columns].astype("object").to_numpy()
+    valid_team = ~pd.isna(team_values)
+
+    distances = np.sqrt((player_x - ball_x) ** 2 + (player_y - ball_y) ** 2)
+    valid = visible & valid_team & ~np.isnan(distances)
+    near_ball = (distances < NEAR_BALL_RADIUS) & valid
+    return near_ball.sum(axis=1).astype(float)
 
 
 def _chosen_values(values: np.ndarray, indices: np.ndarray) -> np.ndarray:
@@ -511,6 +664,54 @@ def _window_events_from_arrays(
     secondary_indices = np.delete(event_indices, primary_position)
     secondary_events = [str(event_types[index]) for index in secondary_indices]
     return primary_event, ",".join(secondary_events)
+
+
+def _clip_features(table: pd.DataFrame, features: list[str]) -> pd.DataFrame:
+    """Clip numeric features to pitch-realistic bounds."""
+    table = table.copy()
+    for feature in features:
+        if feature in table.columns and feature in FEATURE_CLIP_BOUNDS:
+            lo, hi = FEATURE_CLIP_BOUNDS[feature]
+            table[feature] = table[feature].clip(lower=lo, upper=hi)
+    return table
+
+
+def _normalize_tables(
+    tables: dict[str, pd.DataFrame],
+    output_dir: Path,
+) -> dict[str, pd.DataFrame]:
+    """Clip outliers, fit MinMaxScaler on train split, transform all splits."""
+    import joblib
+    from sklearn.preprocessing import MinMaxScaler
+
+    train_table = tables.get("train")
+    if train_table is None or train_table.empty:
+        return tables
+
+    present_features = [f for f in NUMERIC_FEATURES if f in train_table.columns]
+    if not present_features:
+        return tables
+
+    clipped: dict[str, pd.DataFrame] = {}
+    for split_name, table in tables.items():
+        clipped[split_name] = _clip_features(table, present_features)
+
+    scaler = MinMaxScaler()
+    scaler.fit(clipped["train"][present_features].fillna(0.0))
+
+    normalized: dict[str, pd.DataFrame] = {}
+    for split_name, table in clipped.items():
+        table = table.copy()
+        table[present_features] = scaler.transform(
+            table[present_features].fillna(0.0),
+        )
+        normalized[split_name] = table
+
+    scaler_path = output_dir / "feature_scaler.joblib"
+    joblib.dump(scaler, scaler_path)
+    LOGGER.info("Saved fitted scaler to %s", scaler_path)
+
+    return normalized
 
 
 def _summarize_training_table(
