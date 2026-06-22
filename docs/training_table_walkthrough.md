@@ -177,9 +177,11 @@ e.x_meters_absolute = pitch_length_m - x_meters
 is_attacking_direction = 0
 ```
 
-`e.y_meters_absolute` is never flipped. If the window has no primary event, or
-the primary event has missing/non-numeric `e.x` or `e.y`, both converted event
-coordinate columns are filled with `0` for scaling and then normalized.
+`e.y_meters_absolute` is never flipped. If the window has no primary event,
+both event coordinate columns are kept as `0.0` in the final saved tables,
+including after normalization. If a real primary event has missing/non-numeric
+`e.x` or `e.y`, the missing coordinate values are filled with `0` before
+scaling.
 
 ## 6. Ball Features
 
@@ -339,6 +341,13 @@ scaler.fit(train_df[continuous_features].fillna(0))
 
 The fitted train-split scaler is then applied to train, validation, and test.
 The same parquet files are overwritten with normalized values.
+
+After scaling, rows where `primary_event == "no event"` are reset to:
+
+```text
+e.x_meters_absolute = 0.0
+e.y_meters_absolute = 0.0
+```
 
 These columns are not normalized:
 
