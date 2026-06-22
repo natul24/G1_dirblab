@@ -73,6 +73,10 @@ CONTINUOUS_FEATURES = [
     "e.x_meters_absolute",
     "e.y_meters_absolute",
 ]
+EVENT_COORDINATE_COLUMNS = [
+    "e.x_meters_absolute",
+    "e.y_meters_absolute",
+]
 
 BALL_COLUMNS = ["t.ball_x", "t.ball_y", "t.ball_z"]
 EVENT_COLUMN = "e.event.event_type_name"
@@ -453,6 +457,9 @@ def normalize_training_tables(
     _apply_normalization(train_df, scaler)
     _apply_normalization(validation_df, scaler)
     _apply_normalization(test_df, scaler)
+    _zero_no_event_coordinates(train_df)
+    _zero_no_event_coordinates(validation_df)
+    _zero_no_event_coordinates(test_df)
 
     train_df.to_parquet(train_path, index=False)
     validation_df.to_parquet(validation_path, index=False)
@@ -535,6 +542,11 @@ def _apply_normalization(
     )
     for index, column in enumerate(CONTINUOUS_FEATURES):
         table[column] = normalized_values[:, index]
+
+
+def _zero_no_event_coordinates(table: pd.DataFrame) -> None:
+    no_event_mask = table["primary_event"] == "no event"
+    table.loc[no_event_mask, EVENT_COORDINATE_COLUMNS] = 0.0
 
 
 def _all_ball_positions_nan(window_frames: pd.DataFrame) -> bool:
@@ -943,7 +955,7 @@ def _primary_event_coordinates_absolute(
     pitch_width_m: float,
 ) -> tuple[float, float]:
     if primary_index is None:
-        return np.nan, np.nan
+        return 0.0, 0.0
     return convert_event_coordinates_to_absolute_meters(
         window_frames.loc[primary_index, EVENT_X_COLUMN],
         window_frames.loc[primary_index, EVENT_Y_COLUMN],
@@ -962,7 +974,7 @@ def _event_coordinates_for_primary(
     pitch_width_m: float,
 ) -> tuple[float, float]:
     if primary_abs_index is None:
-        return np.nan, np.nan
+        return 0.0, 0.0
     return convert_event_coordinates_to_absolute_meters(
         event_x[primary_abs_index],
         event_y[primary_abs_index],
