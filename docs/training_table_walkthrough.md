@@ -1,9 +1,14 @@
 # Training Table Walkthrough
 
-This guide explains the pass-detection training table built from the Step 2
-master join output.
+This guide documents exactly what `src/driblab/features/training_table.py`
+currently builds.
 
-The training-table module creates one 0.5-second window table per data split:
+The module reads the Step 2 master join table, assigns match-level train,
+validation, and test splits, creates non-overlapping 0.5-second windows, and
+writes one training table plus one summary CSV per split. By default, the
+training tables are normalized after they are built.
+
+Output tables:
 
 ```text
 data/processed/model_base/training_table_train.parquet
@@ -11,7 +16,7 @@ data/processed/model_base/training_table_validation.parquet
 data/processed/model_base/training_table_test.parquet
 ```
 
-It also creates one summary CSV per split:
+Output summaries:
 
 ```text
 data/processed/model_base/training_table_summary_train.csv
@@ -19,56 +24,55 @@ data/processed/model_base/training_table_summary_validation.csv
 data/processed/model_base/training_table_summary_test.csv
 ```
 
-## 1. Why This Table Exists
-
-The master join table is frame-level data. Each row is one tracking frame at
-about 10 Hz.
-
-The pass model needs a more useful modelling grain: short windows of play. The
-training table converts the frame-level master join into non-overlapping
-5-frame windows, which represent about 0.5 seconds.
-
-Each output row answers this question:
+Saved scaler:
 
 ```text
-During this 0.5-second window, does the primary attached event look like a pass?
+artifacts/models/feature_scaler.pkl
 ```
 
-The target column is:
+## 1. Target
+
+Each row is one 5-frame window. The target is:
 
 ```text
 is_pass = 1 when primary_event == "PASS"
 is_pass = 0 otherwise
 ```
 
-## 2. The Critical Split Rule
+`primary_event` is selected from the events attached to the frames inside the
+window. If the window has no event, `primary_event` is `"no event"` and
+`is_pass` is `0`.
 
-The split is applied before feature engineering.
+## 2. Split Rule
+
+The split is assigned before feature engineering.
 
 The workflow is:
 
 1. Load `data/processed/model_base/master_join_table.parquet`.
 2. Load match split definitions from `config.yaml`.
-3. Add `data_split` using
+3. Add `data_split` with
    `driblab.features.match_splits.add_data_split_column`.
-4. Filter to one split at a time.
-5. Build windows and features inside that split only.
-6. Write separate train, validation, and test files.
+4. Build windows separately inside each split.
+5. Write one table and one summary CSV per split.
+6. Fit `StandardScaler` on the train table only.
+7. Apply that scaler to train, validation, and test.
+8. Overwrite the same three parquet files with normalized values.
+9. Save the fitted scaler to `artifacts/models/feature_scaler.pkl`.
 
-This prevents leakage between train, validation, and test because no windowing
-or feature computation is allowed to mix matches from different splits.
-
-The split definitions are match-level holdouts:
-
-```text
-train
-validation
-test
-```
+No window crosses split boundaries, and validation/test statistics are not used
+to fit the scaler.
 
 ## 3. Window Construction
 
-Within each `t.match_id` and `t.period`, rows are sorted by:
+Rows are grouped by:
+
+```text
+t.match_id
+t.period
+```
+
+Inside each match-period group, rows are sorted by:
 
 ```text
 t.match_id
@@ -76,7 +80,7 @@ t.period
 t.frame
 ```
 
-Then the module creates consecutive non-overlapping 5-frame windows:
+The module then creates consecutive non-overlapping 5-frame windows:
 
 ```text
 frames 1-5   -> window_time = 0.5
@@ -84,14 +88,10 @@ frames 6-10  -> window_time = 1.0
 frames 11-15 -> window_time = 1.5
 ```
 
-Any trailing partial group with fewer than 5 frames is ignored. This keeps the
-output contract simple: every training row represents the same number of input
-frames.
+Trailing partial groups with fewer than 5 frames are ignored.
 
-## 4. Confirmed Skip Rule
-
-A window is skipped only when all ball position values are missing across the
-whole 5-frame window:
+A window is skipped only when every ball coordinate value is missing across all
+five frames:
 
 ```text
 t.ball_x
@@ -99,24 +99,91 @@ t.ball_y
 t.ball_z
 ```
 
-If some ball coordinates are missing but at least one ball coordinate exists in
-the window, the row is kept. The missing values remain missing in the output.
+If at least one ball coordinate exists somewhere in the window, the row is
+kept. Missing continuous feature values are filled with `0` during
+normalization.
 
-This is intentional because XGBoost can handle missing numeric values, and
-partial tracking gaps should not automatically remove a useful training
-example.
+## 4. Event Selection
 
-The most recent build skipped:
+A window can contain zero, one, or several attached events.
 
-| Split | Skipped all-ball-missing windows |
-| --- | ---: |
-| train | 117,932 |
-| validation | 22,653 |
-| test | 23,403 |
+The module ignores rows where:
 
-## 5. Ball Features
+```text
+e.event.event_type_name == "no event"
+```
 
-For each window, the module computes average raw tracking ball coordinates:
+If at least one event remains, the primary event is the event with the smallest
+numeric:
+
+```text
+nearest_timestamp_distance_sec
+```
+
+Missing event distances are treated as infinity for sorting. If there are
+multiple events and the primary one is chosen, the other event type names are
+stored in:
+
+```text
+secondary_events
+```
+
+as a comma-separated string. If there are no events in the window:
+
+```text
+primary_event = "no event"
+secondary_events = ""
+```
+
+## 5. Event Coordinates and Direction
+
+The raw event coordinates in the master join are provider coordinates on a
+`0-100` attacking-direction scale. Before normalization, the training table
+converts only the primary event coordinates into absolute pitch meters.
+
+Output columns:
+
+```text
+e.x_meters_absolute
+e.y_meters_absolute
+is_attacking_direction
+```
+
+Conversion before scaling:
+
+```text
+x_meters = e.x * pitch_length_m / 100
+y_meters = e.y * pitch_width_m / 100
+```
+
+The pitch dimensions come from `config.yaml` and default to:
+
+```text
+pitch_length_m = 105.0
+pitch_width_m = 68.0
+```
+
+For period 1:
+
+```text
+e.x_meters_absolute = x_meters
+is_attacking_direction = 1
+```
+
+For period 2 and later:
+
+```text
+e.x_meters_absolute = pitch_length_m - x_meters
+is_attacking_direction = 0
+```
+
+`e.y_meters_absolute` is never flipped. If the window has no primary event, or
+the primary event has missing/non-numeric `e.x` or `e.y`, both converted event
+coordinate columns are filled with `0` for scaling and then normalized.
+
+## 6. Ball Features
+
+The ball columns start as raw tracking coordinates in meters:
 
 ```text
 ball_x_avg
@@ -124,162 +191,235 @@ ball_y_avg
 ball_z_avg
 ```
 
-These stay in the raw tracking coordinate system. No normalization, flipping,
-or event-coordinate conversion is applied at this stage.
+Each is the mean of the matching tracking coordinate over the five frames,
+ignoring missing values.
 
-The module also computes:
+The movement columns are:
 
 ```text
 ball_speed_avg
+ball_speed_change
+ball_direction_x
+ball_direction_y
 ```
 
-This is the mean Euclidean frame-to-frame distance across the window:
+`ball_speed_avg` starts as the mean frame-to-frame 3D Euclidean ball movement
+inside the window:
 
 ```text
 sqrt((x[i+1] - x[i])^2 + (y[i+1] - y[i])^2 + (z[i+1] - z[i])^2)
 ```
 
-Then those inter-frame distances are averaged.
+Frame-to-frame movements with missing coordinates are ignored by the final
+average.
 
-## 6. Closest-Player Features
-
-For the first and fifth frame of each window, the module finds the visible
-player closest to the ball.
-
-Only player slots with these conditions are considered:
+`ball_speed_change` starts as:
 
 ```text
-t.player_XX_visible == True
-t.player_XX_team_id is present
-t.player_XX_x and t.player_XX_y are present
+last valid frame-to-frame movement - first valid frame-to-frame movement
 ```
 
-The distance uses raw tracking x/y coordinates:
+It is filled with `0` for scaling when fewer than two valid frame-to-frame
+movements exist.
+
+`ball_direction_x` and `ball_direction_y` start as the raw tracking-coordinate
+differences from frame 1 to frame 5. They are filled with `0` for scaling when
+the first and fifth frames do not both have complete `t.ball_x`, `t.ball_y`,
+and `t.ball_z` values.
+
+## 7. Closest-Player Features
+
+For frame 1 and frame 5 of each window, the module finds the visible player
+closest to the ball.
+
+A player slot is eligible when:
+
+```text
+t.player_XX_visible is true
+t.player_XX_team_id is present
+t.player_XX_x is present
+t.player_XX_y is present
+```
+
+Distance uses raw tracking x/y meters before normalization:
 
 ```text
 sqrt((player_x - ball_x)^2 + (player_y - ball_y)^2)
 ```
 
-The output columns are:
+Output columns:
 
 ```text
 closest_player_dist_start
 closest_player_team_start
 closest_player_dist_end
 closest_player_team_end
+closest_player_dist_change
 ```
 
-If no visible player can be found, the distance is missing and the team is:
+`closest_player_dist_start` and `closest_player_team_start` come from frame 1.
+`closest_player_dist_end` and `closest_player_team_end` come from frame 5.
+
+`closest_player_dist_change` starts as:
 
 ```text
-unknown
+closest_player_dist_end - closest_player_dist_start
 ```
 
-## 7. Player Change Signal
+If no eligible player is found, the distance is filled with `0` for scaling and
+the team is `"unknown"`.
 
-The pass-signal feature is:
+## 8. Player Density Features
+
+The player-density columns count unique visible player IDs across all five
+frames in the window before normalization:
 
 ```text
-player_changed_same_team
+n_players_near_ball
+n_unique_players_in_frame
 ```
 
-It is `1` when:
+`n_players_near_ball` counts unique visible player IDs that are within 5 meters
+of the ball in at least one frame. It does not require a team ID.
 
-- the closest player at the start is different from the closest player at the
-  end
-- both closest players are on the same team
-- both closest players are known
+`n_unique_players_in_frame` counts unique visible player IDs tracked anywhere
+in the window. It does not require a team ID.
 
+## 9. Team Change Feature
+
+The team-change column is:
+
+```text
+team_changed
+```
+
+When the primary event has a usable `e.possession_id`, `team_changed` is `1` if
+any other event in the same window has a different usable possession ID.
 Otherwise it is `0`.
 
-This feature is not the target. It is a behavioural signal: the ball may have
-moved from one teammate to another during the 0.5-second window.
-
-## 8. Event Selection
-
-A window can contain zero, one, or several attached Step 2 events.
-
-The module looks at:
+If there is no primary event, or the primary event has no usable possession ID,
+the module falls back to the closest-player teams:
 
 ```text
-e.event.event_type_name
-nearest_timestamp_distance_sec
+team_changed = 1 when closest_player_team_start != closest_player_team_end
 ```
 
-Rows where `e.event.event_type_name == "no event"` are ignored for primary
-event selection.
+The fallback returns `0` if either closest-player team is `"unknown"`.
 
-If the window has at least one event, the primary event is the event with the
-smallest `nearest_timestamp_distance_sec`.
+`team_changed` is not scaled.
 
-If the window has no event:
+## 10. Normalization
+
+The module normalizes these continuous columns:
 
 ```text
-primary_event = "no event"
-secondary_events = ""
-is_pass = 0
+ball_x_avg
+ball_y_avg
+ball_z_avg
+ball_speed_avg
+ball_speed_change
+ball_direction_x
+ball_direction_y
+closest_player_dist_start
+closest_player_dist_end
+closest_player_dist_change
+n_players_near_ball
+n_unique_players_in_frame
+e.x_meters_absolute
+e.y_meters_absolute
 ```
 
-All non-primary events in the same window are stored as a comma-separated
-string:
+Normalization uses `sklearn.preprocessing.StandardScaler`.
+
+The scaler is fit only on the train table:
 
 ```text
+scaler.fit(train_df[continuous_features].fillna(0))
+```
+
+The fitted train-split scaler is then applied to train, validation, and test.
+The same parquet files are overwritten with normalized values.
+
+These columns are not normalized:
+
+```text
+t.match_id
+t.period
+window_time
+data_split
+is_attacking_direction
+primary_event
+is_pass
 secondary_events
+closest_player_team_start
+closest_player_team_end
+team_changed
 ```
 
-## 9. Output Columns
+## 11. Output Columns
 
-The training table columns are:
+The output schema is fixed by `OUTPUT_COLUMNS` in `training_table.py`:
 
-| Column | Meaning |
-| --- | --- |
-| `t.match_id` | Source match id. |
-| `t.period` | Source tracking period. |
-| `window_time` | End time of the 5-frame window in seconds within the period. |
-| `data_split` | Match-level split: `train`, `validation`, or `test`. |
-| `primary_event` | Event selected for the window, or `"no event"`. |
-| `is_pass` | Binary target, `1` when `primary_event == "PASS"`. |
-| `secondary_events` | Other event types in the window, comma-separated. |
-| `ball_x_avg` | Mean raw tracking ball x coordinate in the window. |
-| `ball_y_avg` | Mean raw tracking ball y coordinate in the window. |
-| `ball_z_avg` | Mean raw tracking ball z coordinate in the window. |
-| `ball_speed_avg` | Mean raw tracking ball movement per frame. |
-| `closest_player_dist_start` | Closest visible player distance in frame 1. |
-| `closest_player_team_start` | Closest visible player team in frame 1. |
-| `closest_player_dist_end` | Closest visible player distance in frame 5. |
-| `closest_player_team_end` | Closest visible player team in frame 5. |
-| `player_changed_same_team` | `1` when closest player changes to a teammate. |
+| # | Column | Meaning |
+| ---: | --- | --- |
+| 1 | `t.match_id` | Source match ID as a string. |
+| 2 | `t.period` | Source tracking period. |
+| 3 | `window_time` | End time of the 5-frame window in seconds within the period. |
+| 4 | `data_split` | Match-level split: `train`, `validation`, or `test`. |
+| 5 | `is_attacking_direction` | `1` for period 1, `0` for period 2 and later. |
+| 6 | `primary_event` | Selected event type for the window, or `"no event"`. |
+| 7 | `is_pass` | Binary target derived from `primary_event == "PASS"`. |
+| 8 | `secondary_events` | Non-primary event type names in the window, comma-separated. |
+| 9 | `ball_x_avg` | Normalized ball x average. |
+| 10 | `ball_y_avg` | Normalized ball y average. |
+| 11 | `ball_z_avg` | Normalized ball z average. |
+| 12 | `ball_speed_avg` | Normalized mean valid 3D frame-to-frame ball movement. |
+| 13 | `ball_speed_change` | Normalized last-minus-first valid ball movement. |
+| 14 | `ball_direction_x` | Normalized ball x difference from frame 1 to frame 5. |
+| 15 | `ball_direction_y` | Normalized ball y difference from frame 1 to frame 5. |
+| 16 | `e.x_meters_absolute` | Normalized primary event x in absolute pitch meters. |
+| 17 | `e.y_meters_absolute` | Normalized primary event y in pitch meters. |
+| 18 | `closest_player_dist_start` | Normalized closest eligible player distance in frame 1. |
+| 19 | `closest_player_team_start` | Closest eligible player team in frame 1. |
+| 20 | `closest_player_dist_end` | Normalized closest eligible player distance in frame 5. |
+| 21 | `closest_player_team_end` | Closest eligible player team in frame 5. |
+| 22 | `closest_player_dist_change` | Normalized end-minus-start closest-player distance. |
+| 23 | `n_players_near_ball` | Normalized count of unique visible player IDs near the ball. |
+| 24 | `n_unique_players_in_frame` | Normalized count of unique visible player IDs in the window. |
+| 25 | `team_changed` | Possession-ID change within the window, with closest-team fallback. |
 
-## 10. How to Rebuild
+## 12. Rebuild Command
 
-From the project root, use the project conda environment:
+From the project root:
 
 ```bash
 conda activate driblabvenv
 PYTHONPATH=src python -m driblab.features.training_table
 ```
 
-If the package is installed in editable mode inside the environment, the
-`PYTHONPATH=src` prefix is optional:
+To rebuild without normalization:
 
 ```bash
-python -m driblab.features.training_table
+PYTHONPATH=src python -m driblab.features.training_table --no-normalize
 ```
 
-The build reads:
+The default command reads:
 
 ```text
 data/processed/model_base/master_join_table.parquet
 config.yaml
 ```
 
-and writes the split outputs into:
+and writes:
 
 ```text
-data/processed/model_base/
+data/processed/model_base/training_table_train.parquet
+data/processed/model_base/training_table_validation.parquet
+data/processed/model_base/training_table_test.parquet
+artifacts/models/feature_scaler.pkl
 ```
 
-## 11. Most Recent Output Summary
+## 13. Most Recent Output Summary
 
 The most recent generated files contained:
 
@@ -288,18 +428,3 @@ The most recent generated files contained:
 | train | 161,505 | 15,554 | 140,892 | 9.63% | 23 | 2 |
 | validation | 36,719 | 3,567 | 32,044 | 9.71% | 5 | 2 |
 | test | 35,085 | 3,725 | 30,251 | 10.62% | 5 | 2 |
-
-These summaries are useful quick checks before training a model. The pass rate
-is similar across splits, which is a good sign for the match-level holdout.
-
-## 12. Important Notes
-
-- The table keeps raw tracking coordinates.
-- Event coordinates are not used in this feature table yet.
-- No feature computation crosses split boundaries.
-- No possession model is used.
-- No attacking-direction normalization is applied.
-- Missing numeric values are preserved when the window is otherwise valid.
-- The target is based only on the selected primary event in the 0.5-second
-  window.
-- `player_changed_same_team` is a feature, not a label.
