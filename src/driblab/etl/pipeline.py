@@ -3,8 +3,8 @@
 This module mirrors the ETL notebook and contains helper functions for loading
 raw event JSON, tracking JSONL, and event-type reference data. It summarizes
 raw assets, validates that event coordinates already use the provider 0-100
-scale, normalizes tracking x/y coordinates for inspection, and prints basic
-ball, camera, visibility, and cross-file consistency diagnostics.
+scale, builds optional normalized tracking x/y tables for inspection only, and
+prints basic ball, camera, visibility, and cross-file consistency diagnostics.
 """
 
 from __future__ import annotations
@@ -222,8 +222,8 @@ def validate_event_coordinates(df_all_events: pd.DataFrame) -> pd.DataFrame:
     """Convert event coordinate columns to numeric for validation only.
 
     Event x/y coordinates are already supplied on a 0-100 attacking-direction
-    scale. ETL should not rescale them; Step 2 only flips event x into tracking
-    orientation after the match direction is inferred.
+    scale. ETL should not rescale them, and Step 2 preserves the raw event and
+    tracking coordinate columns exactly as provided.
     """
     events_for_coords = df_all_events.copy()
     coord_cols = [
@@ -238,7 +238,7 @@ def validate_event_coordinates(df_all_events: pd.DataFrame) -> pd.DataFrame:
 def normalize_tracking_coordinates(
     tracking_frames: list[dict[str, Any]],
 ) -> dict[str, pd.DataFrame]:
-    """Build normalized 0-100 ball and player coordinate tables."""
+    """Build normalized 0-100 ball and player coordinate tables for ETL QA."""
     ball_rows: list[dict[str, Any]] = []
     player_rows: list[dict[str, Any]] = []
 
@@ -399,8 +399,8 @@ def coordinate_system_analysis(
 
     print("\nCOORDINATE MISMATCH")
     print("  Events:   0-100, normalized, always attacking toward 100")
-    print("  Tracking: raw meters are converted and clipped to 0-100")
-    print("  Alignment required: normalize tracking plus per-half flip")
+    print("  Tracking: raw coordinates are inspected separately")
+    print("  Step 2:   preserves both raw coordinate systems without alignment")
 
     return df_all_events_checked, tracking_coordinate_tables
 

@@ -53,11 +53,7 @@ INTERIM_DATA_DIR = project_path(PATHS["interim_data_dir"])
 PROCESSED_DATA_DIR = project_path(PATHS["processed_data_dir"])
 ARTIFACTS_DIR = project_path(PATHS["artifacts_dir"])
 MODEL_BASE_DATA_DIR = project_path(PATHS["model_base_dir"])
-POSSESSION_SEQUENCE_DATA_DIR = project_path(PATHS["possession_sequence_dir"])
-RULE_BASED_DATA_DIR = project_path(PATHS["rule_based_detection_dir"])
-PASS_CLASSIFIER_DATA_DIR = project_path(PATHS["pass_classifier_dir"])
 TRAINED_MODELS_DIR = project_path(PATHS["trained_models_dir"])
-PASS_CLASSIFIER_MODEL_DIR = project_path(PATHS["pass_classifier_model_dir"])
 MODELS_DIR = PROJECT_ROOT / "src" / "driblab" / "models"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
