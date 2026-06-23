@@ -58,8 +58,7 @@ wheels/
 
 # IDE
 .vscode/
-.idea/
-*.swp
+.idea/*.swp
 *.swo
 *~
 .DS_Store
