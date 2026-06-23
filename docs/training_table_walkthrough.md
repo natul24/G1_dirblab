@@ -428,7 +428,7 @@ artifacts/models/feature_scaler.pkl
 The default command:
 
 ```bash
-PYTHONPATH=src python -m driblab.features.training_table
+python -m driblab.features.training_table
 ```
 
 builds raw tables first, then overwrites the three parquet tables with
@@ -438,7 +438,7 @@ contain standardized values for the continuous columns listed above.
 To inspect raw, interpretable, pre-standardized features, run:
 
 ```bash
-PYTHONPATH=src python -m driblab.features.training_table \
+python -m driblab.features.training_table \
   --no-normalize \
   --output-dir data/processed/model_base_raw
 ```
@@ -452,13 +452,13 @@ Default model-ready build:
 
 ```bash
 conda activate driblabvenv
-PYTHONPATH=src python -m driblab.features.training_table
+python -m driblab.features.training_table
 ```
 
 Raw pre-standardized build for inspection:
 
 ```bash
-PYTHONPATH=src python -m driblab.features.training_table \
+python -m driblab.features.training_table \
   --no-normalize \
   --output-dir data/processed/model_base_raw
 ```
