@@ -290,13 +290,13 @@ model does not encode categorical features.
 Rebuild model-ready training tables:
 
 ```bash
-PYTHONPATH=src python -m driblab.features.training_table
+python -m driblab.features.training_table
 ```
 
 Train the pass detector and regenerate model reports:
 
 ```bash
-PYTHONPATH=src python -m driblab.models.pass_detector
+python -m driblab.models.pass_detector
 ```
 
 Explore the same workflow interactively:
