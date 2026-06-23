@@ -28,6 +28,9 @@ from driblab.features import match_splits
 
 
 LOGGER = logging.getLogger(__name__)
+FEATURE_SCALER_PATH = (
+    TRAINED_MODELS_DIR / "feature_scaler.pkl"
+)
 
 OUTPUT_COLUMNS = [
     "t.match_id",
@@ -45,8 +48,6 @@ OUTPUT_COLUMNS = [
     "ball_speed_change",
     "ball_direction_x",
     "ball_direction_y",
-    "e.x_meters_absolute",
-    "e.y_meters_absolute",
     "closest_player_dist_start",
     "closest_player_team_start",
     "closest_player_dist_end",
@@ -70,15 +71,11 @@ CONTINUOUS_FEATURES = [
     "closest_player_dist_change",
     "n_players_near_ball",
     "n_unique_players_in_frame",
-    "e.x_meters_absolute",
-    "e.y_meters_absolute",
 ]
 
 BALL_COLUMNS = ["t.ball_x", "t.ball_y", "t.ball_z"]
 EVENT_COLUMN = "e.event.event_type_name"
 EVENT_DISTANCE_COLUMN = "nearest_timestamp_distance_sec"
-EVENT_X_COLUMN = "e.x"
-EVENT_Y_COLUMN = "e.y"
 POSSESSION_COLUMN = "e.possession_id"
 MATCH_COLUMN = "t.match_id"
 PERIOD_COLUMN = "t.period"
@@ -87,8 +84,6 @@ SPLIT_COLUMN = "data_split"
 WINDOW_SIZE = 5
 WINDOW_SECONDS = 0.5
 UNKNOWN_TEAM = "unknown"
-PITCH_LENGTH_M = 105.0
-PITCH_WIDTH_M = 68.0
 NEAR_BALL_DISTANCE_M = 5.0
 
 
@@ -109,28 +104,6 @@ def load_training_inputs(
     return master_join, config
 
 
-def convert_event_coordinates_to_absolute_meters(
-    event_x: float,
-    event_y: float,
-    period: int,
-    pitch_length_m: float = PITCH_LENGTH_M,
-    pitch_width_m: float = PITCH_WIDTH_M,
-) -> tuple[float, float]:
-    """Convert 0-100 event coordinates to absolute field meters."""
-    event_x = _to_float(event_x)
-    event_y = _to_float(event_y)
-    if pd.isna(event_x) or pd.isna(event_y):
-        return np.nan, np.nan
-
-    x_meters = event_x * (pitch_length_m / 100.0)
-    y_meters = event_y * (pitch_width_m / 100.0)
-    if int(period) == 1:
-        x_meters_absolute = x_meters
-    else:
-        x_meters_absolute = pitch_length_m - x_meters
-    return float(x_meters_absolute), float(y_meters)
-
-
 def determine_attacking_direction(event_period: int) -> int:
     """Return 1 when the period attacks x=105, else 0."""
     return int(int(event_period) == 1)
@@ -139,8 +112,6 @@ def determine_attacking_direction(event_period: int) -> int:
 def compute_window_features(
     window_frames: pd.DataFrame,
     window_time: float,
-    pitch_length_m: float = PITCH_LENGTH_M,
-    pitch_width_m: float = PITCH_WIDTH_M,
 ) -> dict[str, Any]:
     """Compute pass-classification features for one 5-frame window."""
     first_frame = window_frames.iloc[0]
@@ -148,13 +119,6 @@ def compute_window_features(
     end_player = _closest_visible_player(window_frames.iloc[-1])
     primary_event, secondary_events, primary_index = _window_event_summary(
         window_frames,
-    )
-    event_x_abs, event_y_abs = _primary_event_coordinates_absolute(
-        window_frames,
-        primary_index,
-        first_frame[PERIOD_COLUMN],
-        pitch_length_m,
-        pitch_width_m,
     )
     player_density = _player_density_features(window_frames, 1)
 
@@ -185,8 +149,6 @@ def compute_window_features(
         "ball_speed_change": _ball_speed_change(window_frames),
         "ball_direction_x": _ball_direction(window_frames, axis="x"),
         "ball_direction_y": _ball_direction(window_frames, axis="y"),
-        "e.x_meters_absolute": event_x_abs,
-        "e.y_meters_absolute": event_y_abs,
         "closest_player_dist_start": start_player["distance"],
         "closest_player_team_start": start_player["team_id"],
         "closest_player_dist_end": end_player["distance"],
@@ -211,8 +173,6 @@ def compute_window_features(
 def build_training_table_for_split(
     master_join: pd.DataFrame,
     split_name: str,
-    pitch_length_m: float = PITCH_LENGTH_M,
-    pitch_width_m: float = PITCH_WIDTH_M,
 ) -> pd.DataFrame:
     """Build the training table for one already assigned data split."""
     split_mask = master_join[SPLIT_COLUMN] == split_name
@@ -259,14 +219,6 @@ def build_training_table_for_split(
             complete_period[EVENT_DISTANCE_COLUMN],
             errors="coerce",
         ).to_numpy(dtype=float)
-        event_x = pd.to_numeric(
-            complete_period[EVENT_X_COLUMN],
-            errors="coerce",
-        ).to_numpy(dtype=float)
-        event_y = pd.to_numeric(
-            complete_period[EVENT_Y_COLUMN],
-            errors="coerce",
-        ).to_numpy(dtype=float)
         event_possessions = (
             complete_period[POSSESSION_COLUMN].astype("object").to_numpy()
             if POSSESSION_COLUMN in complete_period
@@ -291,19 +243,6 @@ def build_training_table_for_split(
             primary_event = event_summary["primary_event"]
             secondary_events = event_summary["secondary_events"]
             primary_local_index = event_summary["primary_local_index"]
-            primary_abs_index = (
-                start_idx + primary_local_index
-                if primary_local_index is not None
-                else None
-            )
-            event_x_abs, event_y_abs = _event_coordinates_for_primary(
-                event_x,
-                event_y,
-                primary_abs_index,
-                period,
-                pitch_length_m,
-                pitch_width_m,
-            )
             start_player = _player_from_arrays(closest_players, start_idx)
             end_player = _player_from_arrays(closest_players, end_frame_idx)
             window_number = window_idx + 1
@@ -332,8 +271,6 @@ def build_training_table_for_split(
                     "ball_speed_change": ball_speed_changes[window_idx],
                     "ball_direction_x": ball_direction_x[window_idx],
                     "ball_direction_y": ball_direction_y[window_idx],
-                    "e.x_meters_absolute": event_x_abs,
-                    "e.y_meters_absolute": event_y_abs,
                     "closest_player_dist_start": start_player["distance"],
                     "closest_player_team_start": start_player["team_id"],
                     "closest_player_dist_end": end_player["distance"],
@@ -368,6 +305,7 @@ def build_all_training_tables(
     master_join_path: Path,
     config_path: Path,
     output_dir: Path,
+    summary_output_dir: Path | None = None,
     normalize: bool = True,
     scaler_output_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -375,21 +313,26 @@ def build_all_training_tables(
     master_join_path = master_join_path.expanduser().resolve()
     config_path = config_path.expanduser().resolve()
     output_dir = output_dir.expanduser().resolve()
+    summary_output_dir = (
+        summary_output_dir.expanduser().resolve()
+        if summary_output_dir is not None
+        else output_dir
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
+    summary_output_dir.mkdir(parents=True, exist_ok=True)
 
-    master_join, config = load_training_inputs(master_join_path, config_path)
-    pitch_length_m, pitch_width_m = _pitch_dimensions(config)
+    master_join, _ = load_training_inputs(master_join_path, config_path)
     outputs: dict[str, Any] = {}
 
     for split_name in match_splits.SPLIT_NAMES:
         training_table = build_training_table_for_split(
             master_join,
             split_name,
-            pitch_length_m=pitch_length_m,
-            pitch_width_m=pitch_width_m,
         )
         table_path = output_dir / f"training_table_{split_name}.parquet"
-        summary_path = output_dir / f"training_table_summary_{split_name}.csv"
+        summary_path = (
+            summary_output_dir / f"training_table_summary_{split_name}.csv"
+        )
         training_table.to_parquet(table_path, index=False)
         _summarize_training_table(training_table, split_name).to_csv(
             summary_path,
@@ -411,7 +354,7 @@ def build_all_training_tables(
         scaler_path = (
             scaler_output_path.expanduser().resolve()
             if scaler_output_path is not None
-            else TRAINED_MODELS_DIR / "feature_scaler.pkl"
+            else FEATURE_SCALER_PATH
         )
         normalize_result = normalize_training_tables(
             train_path=table_paths["train"],
@@ -486,16 +429,6 @@ def _load_yaml_config(config_path: Path) -> dict[str, Any]:
     return config
 
 
-def _pitch_dimensions(config: dict[str, Any]) -> tuple[float, float]:
-    pitch_config = config.get("pitch", {})
-    if not isinstance(pitch_config, dict):
-        return PITCH_LENGTH_M, PITCH_WIDTH_M
-    return (
-        float(pitch_config.get("length_m", PITCH_LENGTH_M)),
-        float(pitch_config.get("width_m", PITCH_WIDTH_M)),
-    )
-
-
 def _validate_required_columns(table: pd.DataFrame) -> None:
     required_columns = [
         MATCH_COLUMN,
@@ -504,8 +437,6 @@ def _validate_required_columns(table: pd.DataFrame) -> None:
         *BALL_COLUMNS,
         EVENT_COLUMN,
         EVENT_DISTANCE_COLUMN,
-        EVENT_X_COLUMN,
-        EVENT_Y_COLUMN,
     ]
     missing = [column for column in required_columns if column not in table]
     if missing:
@@ -935,43 +866,6 @@ def _window_event_summary_from_arrays(
     }
 
 
-def _primary_event_coordinates_absolute(
-    window_frames: pd.DataFrame,
-    primary_index: Any | None,
-    period: int,
-    pitch_length_m: float,
-    pitch_width_m: float,
-) -> tuple[float, float]:
-    if primary_index is None:
-        return np.nan, np.nan
-    return convert_event_coordinates_to_absolute_meters(
-        window_frames.loc[primary_index, EVENT_X_COLUMN],
-        window_frames.loc[primary_index, EVENT_Y_COLUMN],
-        period,
-        pitch_length_m,
-        pitch_width_m,
-    )
-
-
-def _event_coordinates_for_primary(
-    event_x: np.ndarray,
-    event_y: np.ndarray,
-    primary_abs_index: int | None,
-    period: int,
-    pitch_length_m: float,
-    pitch_width_m: float,
-) -> tuple[float, float]:
-    if primary_abs_index is None:
-        return np.nan, np.nan
-    return convert_event_coordinates_to_absolute_meters(
-        event_x[primary_abs_index],
-        event_y[primary_abs_index],
-        period,
-        pitch_length_m,
-        pitch_width_m,
-    )
-
-
 def _team_changed(
     window_frames: pd.DataFrame,
     primary_index: Any | None,
@@ -1106,6 +1000,11 @@ def _parse_args() -> argparse.Namespace:
         default=MODEL_BASE_DATA_DIR,
     )
     parser.add_argument(
+        "--summary-output-dir",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
         "--no-normalize",
         action="store_true",
         help="Write raw feature tables without StandardScaler normalization.",
@@ -1113,7 +1012,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scaler-output-path",
         type=Path,
-        default=TRAINED_MODELS_DIR / "feature_scaler.pkl",
+        default=FEATURE_SCALER_PATH,
     )
     return parser.parse_args()
 
@@ -1128,6 +1027,11 @@ def main() -> None:
         project_path(args.master_join_path),
         project_path(args.config_path),
         project_path(args.output_dir),
+        summary_output_dir=(
+            project_path(args.summary_output_dir)
+            if args.summary_output_dir is not None
+            else None
+        ),
         normalize=not args.no_normalize,
         scaler_output_path=project_path(args.scaler_output_path),
     )
