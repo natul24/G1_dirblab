@@ -207,15 +207,19 @@ It does not:
 
 - normalize tracking coordinates
 - flip coordinates into attacking direction
+- convert event coordinates to meters
 - calculate ball speed
 - calculate ball acceleration
-- calculate possession
+- calculate possession-change features
 - calculate player-speed aggregates
 - run a pass classifier
 
 Event coordinates stay exactly as provider event columns. Tracking coordinates
 stay in their raw tracking coordinate system. Ball and player x/y values are
 unpacked from raw `ball` and `data`, but they are not normalized or flipped.
+The training-table step intentionally excludes event coordinate columns to
+avoid leakage into the pass detector, and it adds an explicit period-based
+attacking-direction flag.
 
 ## 8. Output Files
 

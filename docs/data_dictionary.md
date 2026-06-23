@@ -58,9 +58,11 @@ events have `e.*` columns filled with `"no event"`.
 | Event coordinates | Event x/y fields are provider columns. They are already on the provider `0-100` attacking-direction scale, where the eventing team attacks toward high x. Step 2 keeps them as-is in columns such as `e.x`, `e.y`, `e.x_start`, and `e.x_end`. |
 | Tracking coordinates | Tracking coordinate values are unpacked from raw `ball` and `data` fields into `t.ball_*` and `t.player_XX_*` columns. Step 2 does not normalize or flip them. |
 
-The two systems are intentionally not reconciled in the master join. Future
-feature notebooks can create normalized or attacking-direction coordinates from
-the raw columns when those features are needed.
+The two systems are intentionally not reconciled in the master join. The
+training-table feature step excludes event coordinate columns from the
+pass-detector table to avoid leakage, adds an explicit period-based
+attacking-direction flag, and keeps raw tracking coordinates in meters before
+standardization.
 
 ## Match-Clock Join
 

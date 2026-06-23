@@ -1,8 +1,8 @@
 # Driblab Event Detection Pipeline
 
 This repository is structured as a staged machine-learning project. The current
-work covers Step 1 ETL and Step 2 master join tables. Later steps can add
-event-detection models without reshuffling the project again.
+work covers Step 1 ETL, Step 2 master join tables, supervised training-table
+feature engineering, and an XGBoost pass detector.
 
 ## Fresh Clone Reproduction Steps
 
@@ -74,6 +74,8 @@ both events and tracking.
 ```bash
 python main.py etl --max-rows 5
 python main.py step2
+PYTHONPATH=src python -m driblab.features.training_table
+PYTHONPATH=src python -m driblab.models.pass_detector
 ```
 
 These commands recreate:
@@ -81,6 +83,20 @@ These commands recreate:
 ```text
 data/processed/model_base/master_join_table.parquet
 data/processed/model_base/master_join_summary.csv
+data/processed/model_base/training_table_train.parquet
+data/processed/model_base/training_table_validation.parquet
+data/processed/model_base/training_table_test.parquet
+data/processed/model_base/training_table_summary_train.csv
+data/processed/model_base/training_table_summary_validation.csv
+data/processed/model_base/training_table_summary_test.csv
+artifacts/models/feature_scaler.pkl
+artifacts/models/pass_detector.json
+artifacts/models/pass_detector_metadata.json
+artifacts/models/feature_encoders.pkl
+reports/model_evaluation_results.json
+reports/figures/feature_importance.png
+reports/figures/roc_curve.png
+reports/figures/confusion_matrices.png
 ```
 
 6. Open the notebooks with the same environment.
@@ -95,6 +111,8 @@ Use the `driblabvenv` kernel and run notebooks in this order:
 ```text
 notebooks/ETL.ipynb
 notebooks/master_join_walkthrough.ipynb
+notebooks/training_table_walkthrough.ipynb
+notebooks/xgboost_pass_detector.ipynb
 ```
 
 7. Read the markdown documentation.
@@ -106,6 +124,8 @@ commands above:
 ```text
 docs/master_join_walkthrough.md
 docs/data_dictionary.md
+docs/training_table_walkthrough.md
+docs/xgboost_model_guide.md
 ```
 
 8. Optional code-quality check.
@@ -136,11 +156,16 @@ python -m flake8 .
 ├── docs/
 │   ├── data_dictionary.md
 │   ├── master_join_walkthrough.md
+│   ├── training_table_walkthrough.md
+│   └── xgboost_model_guide.md
 ├── notebooks/
 │   ├── ETL.ipynb
 │   ├── data_exploration.ipynb
-│   └── master_join_walkthrough.ipynb
+│   ├── master_join_walkthrough.ipynb
+│   ├── training_table_walkthrough.ipynb
+│   └── xgboost_pass_detector.ipynb
 ├── reports/
+│   ├── model_evaluation_results.json
 │   └── figures/
 ├── src/
 │   └── driblab/
@@ -150,8 +175,10 @@ python -m flake8 .
 │       │   ├── master_join.py
 │       │   └── pipeline.py
 │       ├── features/
-│       │   └── match_splits.py
+│       │   ├── match_splits.py
+│       │   └── training_table.py
 │       └── models/
+│           └── pass_detector.py
 └── tests/
 ```
 
@@ -164,6 +191,8 @@ python -m flake8 .
 | `src/driblab/etl/pipeline.py` | Step 1 ETL checks | Raw event/tracking loaders plus coordinate, asset, camera, ball, and consistency diagnostics. |
 | `src/driblab/etl/master_join.py` | Step 2 foundation | Builds the tracking-first master join table from raw events and tracking data. |
 | `src/driblab/features/match_splits.py` | Split management | Assigns complete matches to `train`, `validation`, and `test` without row-level leakage. |
+| `src/driblab/features/training_table.py` | Feature engineering | Builds 5-frame training windows, writes split training tables and summaries, and standardizes continuous features with a train-fitted scaler. |
+| `src/driblab/models/pass_detector.py` | Model training | Trains the XGBoost pass detector and writes model artifacts, metrics, and evaluation figures. |
 
 ## Data Inventory
 
@@ -178,6 +207,19 @@ Current generated processed outputs and model artifacts:
 
 - all-match master join table: `data/processed/model_base/master_join_table.parquet`
 - all-match summary: `data/processed/model_base/master_join_summary.csv`
+- model-ready training tables:
+  `data/processed/model_base/training_table_train.parquet`,
+  `data/processed/model_base/training_table_validation.parquet`, and
+  `data/processed/model_base/training_table_test.parquet`
+- training-table summaries:
+  `data/processed/model_base/training_table_summary_train.csv`,
+  `data/processed/model_base/training_table_summary_validation.csv`, and
+  `data/processed/model_base/training_table_summary_test.csv`
+- train-fitted feature scaler: `artifacts/models/feature_scaler.pkl`
+- pass detector model: `artifacts/models/pass_detector.json`
+- pass detector metadata: `artifacts/models/pass_detector_metadata.json`
+- model evaluation report: `reports/model_evaluation_results.json`
+- model evaluation figures under `reports/figures/`
 - optional single-match sample files:
   `data/processed/model_base/master_join_table_679026.parquet` and
   `data/processed/model_base/master_join_summary_679026.csv`
@@ -194,9 +236,9 @@ regenerate processed outputs and model artifacts if needed.
 | --- | --- | --- |
 | `data/raw/` | Original provider data can be large or private. | Download the shared raw data from [Google Drive](https://drive.google.com/file/d/1cWG2Yly2w1boaDFIX_S076lvqiHS_Yde/view?usp=sharing), then copy the files into this folder. |
 | `data/interim/` | Temporary scratch outputs are not part of the modelling contract. | Recreate only if a future stage needs them. |
-| `data/processed/` | Generated Parquet, CSV, and JSON outputs can be recreated from raw data. | Run `python main.py step2`. |
-| `artifacts/models/` | Reserved for future trained model files. | No current command writes model artifacts. |
-| `reports/figures/` | Generated plots can be recreated from notebooks or scripts. | Re-run the relevant notebook or reporting code. |
+| `data/processed/` | Generated Parquet, CSV, and JSON outputs can be recreated from raw data. | Run `python main.py step2`, then `PYTHONPATH=src python -m driblab.features.training_table`. |
+| `artifacts/models/` | Generated scaler and trained model artifacts. | Re-run `PYTHONPATH=src python -m driblab.features.training_table` and `PYTHONPATH=src python -m driblab.models.pass_detector`. |
+| `reports/figures/` | Generated model plots can be recreated from the model script. | Re-run `PYTHONPATH=src python -m driblab.models.pass_detector`. |
 | `docs/DRIBLAB_CAPSTONE_EXECUTIVE_SUMMARY.pdf`, `docs/Student Kickoff Guide - Event Detection.pdf` | Local course/reference PDFs are not needed to run the pipeline. | Keep local copies outside Git if needed. |
 | `.matplotlib_cache/`, `__pycache__/`, `.ipynb_checkpoints/` | Local runtime/cache files. | Created automatically by Python, Matplotlib, or Jupyter. |
 
@@ -221,7 +263,9 @@ refresh processed tables.
 
 Rerunning a stage overwrites that stage's fixed output files in place. It does
 not create duplicate timestamped files. For example, `python main.py step2`
-rewrites the all-match master join table and summary.
+rewrites the all-match master join table and summary, and
+`PYTHONPATH=src python -m driblab.features.training_table` rewrites the
+model-ready training tables and summaries.
 
 ## Environment
 
@@ -339,19 +383,41 @@ Expected main output:
 data/processed/model_base/master_join_table.parquet
 ```
 
-To run the full current pipeline from raw data through Step 2:
+Build the model-ready training tables:
+
+```bash
+PYTHONPATH=src python -m driblab.features.training_table
+```
+
+Train the XGBoost pass detector and regenerate model reports:
+
+```bash
+PYTHONPATH=src python -m driblab.models.pass_detector
+```
+
+To run the full current pipeline from raw data through the pass detector:
 
 ```bash
 conda activate driblabvenv
 python main.py step2
+PYTHONPATH=src python -m driblab.features.training_table
+PYTHONPATH=src python -m driblab.models.pass_detector
 ```
 
 Detailed Step 2 logic is documented in
 [`docs/master_join_walkthrough.md`](docs/master_join_walkthrough.md).
 The project column dictionary is in
 [`docs/data_dictionary.md`](docs/data_dictionary.md).
+Training-table feature engineering is documented in
+[`docs/training_table_walkthrough.md`](docs/training_table_walkthrough.md).
+The XGBoost model is documented in
+[`docs/xgboost_model_guide.md`](docs/xgboost_model_guide.md).
 The master join walkthrough notebook is in
 [`notebooks/master_join_walkthrough.ipynb`](notebooks/master_join_walkthrough.ipynb).
+The training-table and model notebooks are:
+[`notebooks/training_table_walkthrough.ipynb`](notebooks/training_table_walkthrough.ipynb)
+and
+[`notebooks/xgboost_pass_detector.ipynb`](notebooks/xgboost_pass_detector.ipynb).
 
 All pipeline paths and match splits are configured in `config.yaml`.
 
@@ -374,23 +440,25 @@ Step 2 preserves both sources as raw columns. Event columns keep the provider
 `0-100` attacking-direction coordinates in `e.*` fields. Tracking coordinates
 are unpacked into `t.ball_*` and `t.player_XX_*` columns; they are not
 normalized, flipped, or converted into attacking-direction features in the
-master join.
+master join. The later training-table step excludes event coordinate columns
+from the pass-detector table to avoid leakage.
 
 ## Current Outputs
 
-Default single-match output:
-
-```text
-data/processed/model_base/master_join_table_<match_id>.parquet
-```
-
-For model training across all available matches, use:
+Default all-match master join output:
 
 ```text
 data/processed/model_base/master_join_table.parquet
 ```
 
-That combined Parquet table has one row per tracking frame across every match,
+Optional specific-match Step 2 output:
+
+```text
+data/processed/model_base/master_join_table_<match_id>.parquet
+data/processed/model_base/master_join_summary_<match_id>.csv
+```
+
+The combined Parquet table has one row per tracking frame across every match,
 with original tracking columns prefixed as `t.*` and original flattened event
 columns prefixed as `e.*`. Frames without an attached event have event columns
 filled with `"no event"`. Step 2 adds `t.match_id` from the source filename so
@@ -411,10 +479,17 @@ tolerance window. The nearest-frame distance is saved in
 `nearest_timestamp_distance_sec`, and if multiple events choose the same frame,
 only the event with the smallest distance is kept.
 
-## Next ML Stages
+The training-table stage then creates 5-frame windows, assigns match-level
+train/validation/test splits, writes model-ready tables, and fits a
+train-only `StandardScaler` for continuous features.
+
+The model stage trains an XGBoost binary classifier and writes the model,
+metadata, metrics, and evaluation figures.
+
+## Current ML Stages
 
 Current and future code should stay staged:
 
-- `src/driblab/features/` for match splits and later supervised training windows
-- `src/driblab/models/` for future model training, saving, and inference
+- `src/driblab/features/` for match splits and supervised training windows
+- `src/driblab/models/` for model training, saving, and inference
 - `reports/` for model performance outputs
