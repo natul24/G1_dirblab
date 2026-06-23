@@ -88,6 +88,11 @@ both events and tracking.
 ```bash
 python main.py etl --max-rows 5
 python main.py step2
+```
+
+Then open and run `notebooks/pre_training_table.ipynb` to build `pre_training_table.parquet`.
+
+```bash
 python -m driblab.features.training_table
 python -m driblab.models.pass_detector
 ```
@@ -97,13 +102,8 @@ These commands recreate:
 ```text
 data/processed/model_base/master_join_table.parquet
 data/processed/model_base/master_join_summary.csv
-data/processed/model_base/training_table_train.parquet
-data/processed/model_base/training_table_validation.parquet
-data/processed/model_base/training_table_test.parquet
-data/processed/model_base/training_table_summary_train.csv
-data/processed/model_base/training_table_summary_validation.csv
-data/processed/model_base/training_table_summary_test.csv
-artifacts/models/feature_scaler.pkl
+data/processed/model_base/pre_training_table.parquet
+data/processed/model_base/training_table_simple.parquet
 artifacts/models/pass_detector.json
 artifacts/models/pass_detector_metadata.json
 artifacts/models/feature_encoders.pkl
@@ -205,7 +205,7 @@ python -m flake8 .
 | `src/driblab/etl/pipeline.py` | Step 1 ETL checks | Raw event/tracking loaders plus coordinate, asset, camera, ball, and consistency diagnostics. |
 | `src/driblab/etl/master_join.py` | Step 2 foundation | Builds the tracking-first master join table from raw events and tracking data. |
 | `src/driblab/features/match_splits.py` | Split management | Assigns complete matches to `train`, `validation`, and `test` without row-level leakage. |
-| `src/driblab/features/training_table.py` | Feature engineering | Builds 5-frame training windows, writes split training tables and summaries, and standardizes continuous features with a train-fitted scaler. |
+| `src/driblab/features/training_table.py` | Feature engineering | Builds 5-frame non-overlapping windows from `pre_training_table.parquet`, selects the primary event per window using `p.dist_to_actual_event`, computes 2D ball speed, and writes `training_table_simple.parquet`. |
 | `src/driblab/models/pass_detector.py` | Model training | Trains the XGBoost pass detector and writes model artifacts, metrics, and evaluation figures. |
 
 ## Data Inventory
@@ -221,15 +221,8 @@ Current generated processed outputs and model artifacts:
 
 - all-match master join table: `data/processed/model_base/master_join_table.parquet`
 - all-match summary: `data/processed/model_base/master_join_summary.csv`
-- model-ready training tables:
-  `data/processed/model_base/training_table_train.parquet`,
-  `data/processed/model_base/training_table_validation.parquet`, and
-  `data/processed/model_base/training_table_test.parquet`
-- training-table summaries:
-  `data/processed/model_base/training_table_summary_train.csv`,
-  `data/processed/model_base/training_table_summary_validation.csv`, and
-  `data/processed/model_base/training_table_summary_test.csv`
-- train-fitted feature scaler: `artifacts/models/feature_scaler.pkl`
+- pre-training table: `data/processed/model_base/pre_training_table.parquet`
+- model-ready training table: `data/processed/model_base/training_table_simple.parquet`
 - pass detector model: `artifacts/models/pass_detector.json`
 - pass detector metadata: `artifacts/models/pass_detector_metadata.json`
 - model evaluation report: `reports/model_evaluation_results.json`
@@ -250,8 +243,8 @@ regenerate processed outputs and model artifacts if needed.
 | --- | --- | --- |
 | `data/raw/` | Original provider data can be large or private. | Download the shared raw data from [Google Drive](https://drive.google.com/file/d/1cWG2Yly2w1boaDFIX_S076lvqiHS_Yde/view?usp=sharing), then copy the files into this folder. |
 | `data/interim/` | Temporary scratch outputs are not part of the modelling contract. | Recreate only if a future stage needs them. |
-| `data/processed/` | Generated Parquet, CSV, and JSON outputs can be recreated from raw data. | Run `python main.py step2`, then `python -m driblab.features.training_table`. |
-| `artifacts/models/` | Generated scaler and trained model artifacts. | Re-run `python -m driblab.features.training_table` and `python -m driblab.models.pass_detector`. |
+| `data/processed/` | Generated Parquet and CSV outputs can be recreated from raw data. | Run `python main.py step2`, then run `notebooks/pre_training_table.ipynb`, then `python -m driblab.features.training_table`. |
+| `artifacts/models/` | Generated trained model artifacts. | Re-run `python -m driblab.models.pass_detector`. |
 | `reports/figures/` | Generated model plots can be recreated from the model script. | Re-run `python -m driblab.models.pass_detector`. |
 | `docs/DRIBLAB_CAPSTONE_EXECUTIVE_SUMMARY.pdf`, `docs/Student Kickoff Guide - Event Detection.pdf` | Local course/reference PDFs are not needed to run the pipeline. | Keep local copies outside Git if needed. |
 | `.matplotlib_cache/`, `__pycache__/`, `.ipynb_checkpoints/` | Local runtime/cache files. | Created automatically by Python, Matplotlib, or Jupyter. |
@@ -401,7 +394,13 @@ Expected main output:
 data/processed/model_base/master_join_table.parquet
 ```
 
-Build the model-ready training tables:
+Build the pre-training table (run this notebook first):
+
+```text
+notebooks/pre_training_table.ipynb
+```
+
+Build the model-ready training table:
 
 ```bash
 python -m driblab.features.training_table
@@ -497,9 +496,9 @@ tolerance window. The nearest-frame distance is saved in
 `nearest_timestamp_distance_sec`, and if multiple events choose the same frame,
 only the event with the smallest distance is kept.
 
-The training-table stage then creates 5-frame windows, assigns match-level
-train/validation/test splits, writes model-ready tables, and fits a
-train-only `StandardScaler` for continuous features.
+The training-table stage then reads `pre_training_table.parquet`, creates 5-frame
+windows, selects the primary event per window using `p.dist_to_actual_event`,
+computes 2D ball speed, and writes `training_table_simple.parquet`.
 
 The model stage trains an XGBoost binary classifier and writes the model,
 metadata, metrics, and evaluation figures.

@@ -60,9 +60,7 @@ events have `e.*` columns filled with `"no event"`.
 
 The two systems are intentionally not reconciled in the master join. The
 training-table feature step excludes event coordinate columns from the
-pass-detector table to avoid leakage, adds an explicit period-based
-attacking-direction flag, and keeps raw tracking coordinates in meters before
-standardization.
+pass-detector table to avoid leakage.
 
 ## Match-Clock Join
 
