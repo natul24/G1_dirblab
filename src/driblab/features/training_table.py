@@ -28,7 +28,10 @@ OUTPUT_COLUMNS = [
     "ball_speed_avg_xy",
 ]
 
-OUTPUT_PATH = MODEL_BASE_DATA_DIR / "training_table_simple.parquet"
+SPLIT_OUTPUT_PATHS = {
+    split: MODEL_BASE_DATA_DIR / f"training_table_{split}.parquet"
+    for split in ["train", "validation", "test"]
+}
 INPUT_COLUMNS = [
     "t.match_id",
     "t.period",
@@ -138,10 +141,11 @@ def main() -> None:
     pre_training_path = MODEL_BASE_DATA_DIR / "pre_training_table.parquet"
     training_table = build_training_table(pre_training_path)
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    training_table.to_parquet(OUTPUT_PATH, index=False)
-
-    print(f"Saved {len(training_table):,} rows -> {OUTPUT_PATH}")
+    MODEL_BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for split_name, path in SPLIT_OUTPUT_PATHS.items():
+        split_df = training_table[training_table["data_split"] == split_name]
+        split_df.to_parquet(path, index=False)
+        print(f"Saved {split_name:12s}: {len(split_df):,} rows -> {path.name}")
 
 
 if __name__ == "__main__":

@@ -103,7 +103,9 @@ These commands recreate:
 data/processed/model_base/master_join_table.parquet
 data/processed/model_base/master_join_summary.csv
 data/processed/model_base/pre_training_table.parquet
-data/processed/model_base/training_table_simple.parquet
+data/processed/model_base/training_table_train.parquet
+data/processed/model_base/training_table_validation.parquet
+data/processed/model_base/training_table_test.parquet
 artifacts/models/pass_detector.json
 artifacts/models/pass_detector_metadata.json
 artifacts/models/feature_encoders.pkl
@@ -222,7 +224,10 @@ Current generated processed outputs and model artifacts:
 - all-match master join table: `data/processed/model_base/master_join_table.parquet`
 - all-match summary: `data/processed/model_base/master_join_summary.csv`
 - pre-training table: `data/processed/model_base/pre_training_table.parquet`
-- model-ready training table: `data/processed/model_base/training_table_simple.parquet`
+- model-ready training tables:
+  `data/processed/model_base/training_table_train.parquet`,
+  `data/processed/model_base/training_table_validation.parquet`, and
+  `data/processed/model_base/training_table_test.parquet`
 - pass detector model: `artifacts/models/pass_detector.json`
 - pass detector metadata: `artifacts/models/pass_detector_metadata.json`
 - model evaluation report: `reports/model_evaluation_results.json`
@@ -498,7 +503,7 @@ only the event with the smallest distance is kept.
 
 The training-table stage then reads `pre_training_table.parquet`, creates 5-frame
 windows, selects the primary event per window using `p.dist_to_actual_event`,
-computes 2D ball speed, and writes `training_table_simple.parquet`.
+computes 2D ball speed, and writes one parquet per split (`training_table_train.parquet`, etc.).
 
 The model stage trains an XGBoost binary classifier and writes the model,
 metadata, metrics, and evaluation figures.
