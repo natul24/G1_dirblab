@@ -23,7 +23,6 @@ Replace `<repo-url>` with the GitHub URL for this project.
 ```bash
 conda env create -f environment.yml
 conda activate driblabvenv
-python -c "from driblab.config import PROJECT_ROOT; print(PROJECT_ROOT)"
 ```
 
 If the environment already exists, update it instead:
@@ -33,7 +32,22 @@ conda env update -f environment.yml --prune
 conda activate driblabvenv
 ```
 
-3. Add the raw Driblab files locally.
+3. Update or sync the environment from `environment.yml`.
+
+Run this after pulling project changes or whenever dependencies/project
+packaging change. This also applies the editable local install configured in
+`environment.yml`, so `python -m driblab...` commands work without setting
+`PYTHONPATH`.
+
+```bash
+conda env update -f environment.yml --prune
+conda activate driblabvenv
+python -c "from driblab.config import PROJECT_ROOT; print(PROJECT_ROOT)"
+```
+
+If this prints the project path, the environment is ready.
+
+4. Add the raw Driblab files locally.
 
 Raw data is ignored by Git, so it will not come from GitHub. Download the shared
 raw data file from
@@ -59,7 +73,7 @@ tracked reference file:
 cp data/reference/dim_event_type.csv data/raw/dim_event_type.csv
 ```
 
-4. Confirm that the raw files are visible to the project.
+5. Confirm that the raw files are visible to the project.
 
 ```bash
 python -c "from pathlib import Path; print('events', len(list(Path('data/raw').glob('*_events.json')))); print('tracking', len(list(Path('data/raw').glob('*_tracking_data.jsonl')))); print('event types', Path('data/raw/dim_event_type.csv').exists())"
@@ -69,13 +83,13 @@ For the current class data, the expected inventory is `34` event files, `33`
 tracking files, and one event-only match. Step 2 uses only matches that have
 both events and tracking.
 
-5. Run the pipeline to recreate generated local outputs.
+6. Run the pipeline to recreate generated local outputs.
 
 ```bash
 python main.py etl --max-rows 5
 python main.py step2
-PYTHONPATH=src python -m driblab.features.training_table
-PYTHONPATH=src python -m driblab.models.pass_detector
+python -m driblab.features.training_table
+python -m driblab.models.pass_detector
 ```
 
 These commands recreate:
@@ -99,7 +113,7 @@ reports/figures/roc_curve.png
 reports/figures/confusion_matrices.png
 ```
 
-6. Open the notebooks with the same environment.
+7. Open the notebooks with the same environment.
 
 ```bash
 python -m ipykernel install --user --name driblabvenv --display-name driblabvenv
@@ -115,7 +129,7 @@ notebooks/training_table_walkthrough.ipynb
 notebooks/xgboost_pass_detector.ipynb
 ```
 
-7. Read the markdown documentation.
+8. Read the markdown documentation.
 
 The markdown files in `docs/` are tracked source documentation, not generated
 outputs. They explain the pipeline logic and the columns produced by the
@@ -128,7 +142,7 @@ docs/training_table_walkthrough.md
 docs/xgboost_model_guide.md
 ```
 
-8. Optional code-quality check.
+9. Optional code-quality check.
 
 ```bash
 python -m flake8 .
@@ -236,9 +250,9 @@ regenerate processed outputs and model artifacts if needed.
 | --- | --- | --- |
 | `data/raw/` | Original provider data can be large or private. | Download the shared raw data from [Google Drive](https://drive.google.com/file/d/1cWG2Yly2w1boaDFIX_S076lvqiHS_Yde/view?usp=sharing), then copy the files into this folder. |
 | `data/interim/` | Temporary scratch outputs are not part of the modelling contract. | Recreate only if a future stage needs them. |
-| `data/processed/` | Generated Parquet, CSV, and JSON outputs can be recreated from raw data. | Run `python main.py step2`, then `PYTHONPATH=src python -m driblab.features.training_table`. |
-| `artifacts/models/` | Generated scaler and trained model artifacts. | Re-run `PYTHONPATH=src python -m driblab.features.training_table` and `PYTHONPATH=src python -m driblab.models.pass_detector`. |
-| `reports/figures/` | Generated model plots can be recreated from the model script. | Re-run `PYTHONPATH=src python -m driblab.models.pass_detector`. |
+| `data/processed/` | Generated Parquet, CSV, and JSON outputs can be recreated from raw data. | Run `python main.py step2`, then `python -m driblab.features.training_table`. |
+| `artifacts/models/` | Generated scaler and trained model artifacts. | Re-run `python -m driblab.features.training_table` and `python -m driblab.models.pass_detector`. |
+| `reports/figures/` | Generated model plots can be recreated from the model script. | Re-run `python -m driblab.models.pass_detector`. |
 | `docs/DRIBLAB_CAPSTONE_EXECUTIVE_SUMMARY.pdf`, `docs/Student Kickoff Guide - Event Detection.pdf` | Local course/reference PDFs are not needed to run the pipeline. | Keep local copies outside Git if needed. |
 | `.matplotlib_cache/`, `__pycache__/`, `.ipynb_checkpoints/` | Local runtime/cache files. | Created automatically by Python, Matplotlib, or Jupyter. |
 
@@ -264,7 +278,7 @@ refresh processed tables.
 Rerunning a stage overwrites that stage's fixed output files in place. It does
 not create duplicate timestamped files. For example, `python main.py step2`
 rewrites the all-match master join table and summary, and
-`PYTHONPATH=src python -m driblab.features.training_table` rewrites the
+`python -m driblab.features.training_table` rewrites the
 model-ready training tables and summaries.
 
 ## Environment
@@ -342,6 +356,10 @@ conda env update -f environment.yml --prune
 The environment installs the local project package in editable mode, so imports
 from `src/driblab/` work from `main.py` and notebooks.
 
+If `python -m driblab...` commands fail with `ModuleNotFoundError`, refresh the
+environment from `environment.yml` or run `pip install -e .` inside
+`driblabvenv`.
+
 ## Run the Project From Terminal
 
 Run all commands from the project root, after activating the environment:
@@ -386,13 +404,13 @@ data/processed/model_base/master_join_table.parquet
 Build the model-ready training tables:
 
 ```bash
-PYTHONPATH=src python -m driblab.features.training_table
+python -m driblab.features.training_table
 ```
 
 Train the XGBoost pass detector and regenerate model reports:
 
 ```bash
-PYTHONPATH=src python -m driblab.models.pass_detector
+python -m driblab.models.pass_detector
 ```
 
 To run the full current pipeline from raw data through the pass detector:
@@ -400,8 +418,8 @@ To run the full current pipeline from raw data through the pass detector:
 ```bash
 conda activate driblabvenv
 python main.py step2
-PYTHONPATH=src python -m driblab.features.training_table
-PYTHONPATH=src python -m driblab.models.pass_detector
+python -m driblab.features.training_table
+python -m driblab.models.pass_detector
 ```
 
 Detailed Step 2 logic is documented in
