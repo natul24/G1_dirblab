@@ -14,10 +14,12 @@ config.yaml
 `pre_training_table.parquet` is built by running `notebooks/pre_training_table.ipynb`.
 It extends the master join table with `p.*` event label columns assigned to every tracking frame.
 
-The module writes one file:
+The module writes one file per split:
 
 ```text
-data/processed/model_base/training_table_simple.parquet
+data/processed/model_base/training_table_train.parquet
+data/processed/model_base/training_table_validation.parquet
+data/processed/model_base/training_table_test.parquet
 ```
 
 No summary CSVs or scaler artifacts are written by this module.
@@ -140,5 +142,7 @@ python -m driblab.features.training_table
 This writes:
 
 ```text
-data/processed/model_base/training_table_simple.parquet
+data/processed/model_base/training_table_train.parquet
+data/processed/model_base/training_table_validation.parquet
+data/processed/model_base/training_table_test.parquet
 ```
