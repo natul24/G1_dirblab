@@ -36,8 +36,7 @@ conda activate driblabvenv
 
 Run this after pulling project changes or whenever dependencies/project
 packaging change. This also applies the editable local install configured in
-`environment.yml`, so `python -m driblab...` commands work without setting
-`PYTHONPATH`.
+`environment.yml`, so `main.py` can import the local project package.
 
 ```bash
 conda env update -f environment.yml --prune
@@ -86,16 +85,13 @@ both events and tracking.
 6. Run the pipeline to recreate generated local outputs.
 
 ```bash
-python main.py etl --max-rows 5
-python main.py step2
+python main.py master-join
+python main.py pre-training
+python main.py training-table
+python main.py pass-detector
 ```
 
-Then open and run `notebooks/pre_training_table.ipynb` to build `pre_training_table.parquet`.
-
-```bash
-python -m driblab.features.training_table
-python -m driblab.models.pass_detector
-```
+To run every current stage in sequence, use `python main.py all`.
 
 These commands recreate:
 
@@ -192,6 +188,7 @@ python -m flake8 .
 │       │   └── pipeline.py
 │       ├── features/
 │       │   ├── match_splits.py
+│       │   ├── pre_training_table.py
 │       │   └── training_table.py
 │       └── models/
 │           └── pass_detector.py
@@ -207,7 +204,8 @@ python -m flake8 .
 | `src/driblab/etl/pipeline.py` | Step 1 ETL checks | Raw event/tracking loaders plus coordinate, asset, camera, ball, and consistency diagnostics. |
 | `src/driblab/etl/master_join.py` | Step 2 foundation | Builds the tracking-first master join table from raw events and tracking data. |
 | `src/driblab/features/match_splits.py` | Split management | Assigns complete matches to `train`, `validation`, and `test` without row-level leakage. |
-| `src/driblab/features/training_table.py` | Feature engineering | Builds 5-frame non-overlapping windows from `pre_training_table.parquet`, selects the primary event per window, computes 2D ball speed, finds the closest visible player at the event frame, and writes one parquet per split. |
+| `src/driblab/features/pre_training_table.py` | Event labeling | Builds `pre_training_table.parquet` from the master join by assigning the nearest selected event label within a 1-second window. |
+| `src/driblab/features/training_table.py` | Feature engineering | Samples one row per 5-frame interval from `pre_training_table.parquet`, computes rolling 2D ball speed, finds the closest visible player, creates `is_pass`, and writes one parquet per split. |
 | `src/driblab/models/pass_detector.py` | Model training | Trains the XGBoost pass detector and writes model artifacts, metrics, and evaluation figures. |
 
 ## Data Inventory
@@ -248,9 +246,9 @@ regenerate processed outputs and model artifacts if needed.
 | --- | --- | --- |
 | `data/raw/` | Original provider data can be large or private. | Download the shared raw data from [Google Drive](https://drive.google.com/file/d/1cWG2Yly2w1boaDFIX_S076lvqiHS_Yde/view?usp=sharing), then copy the files into this folder. |
 | `data/interim/` | Temporary scratch outputs are not part of the modelling contract. | Recreate only if a future stage needs them. |
-| `data/processed/` | Generated Parquet and CSV outputs can be recreated from raw data. | Run `python main.py step2`, then run `notebooks/pre_training_table.ipynb`, then `python -m driblab.features.training_table`. |
-| `artifacts/models/` | Generated trained model artifacts. | Re-run `python -m driblab.models.pass_detector`. |
-| `reports/figures/` | Generated model plots can be recreated from the model script. | Re-run `python -m driblab.models.pass_detector`. |
+| `data/processed/` | Generated Parquet and CSV outputs can be recreated from raw data. | Run `python main.py master-join`, `python main.py pre-training`, and `python main.py training-table`. |
+| `artifacts/models/` | Generated trained model artifacts. | Re-run `python main.py pass-detector`. |
+| `reports/figures/` | Generated model plots can be recreated from the model script. | Re-run `python main.py pass-detector`. |
 | `docs/DRIBLAB_CAPSTONE_EXECUTIVE_SUMMARY.pdf`, `docs/Student Kickoff Guide - Event Detection.pdf` | Local course/reference PDFs are not needed to run the pipeline. | Keep local copies outside Git if needed. |
 | `.matplotlib_cache/`, `__pycache__/`, `.ipynb_checkpoints/` | Local runtime/cache files. | Created automatically by Python, Matplotlib, or Jupyter. |
 
@@ -274,10 +272,9 @@ Once raw files are in place, run the project pipeline from the terminal to
 refresh processed tables.
 
 Rerunning a stage overwrites that stage's fixed output files in place. It does
-not create duplicate timestamped files. For example, `python main.py step2`
+not create duplicate timestamped files. For example, `python main.py master-join`
 rewrites the all-match master join table and summary, and
-`python -m driblab.features.training_table` rewrites the
-model-ready training tables and summaries.
+`python main.py training-table` rewrites the model-ready training tables.
 
 ## Environment
 
@@ -354,9 +351,8 @@ conda env update -f environment.yml --prune
 The environment installs the local project package in editable mode, so imports
 from `src/driblab/` work from `main.py` and notebooks.
 
-If `python -m driblab...` commands fail with `ModuleNotFoundError`, refresh the
-environment from `environment.yml` or run `pip install -e .` inside
-`driblabvenv`.
+If local imports fail with `ModuleNotFoundError`, refresh the environment from
+`environment.yml` or run `pip install -e .` inside `driblabvenv`.
 
 ## Run the Project From Terminal
 
@@ -381,50 +377,42 @@ Check that the raw files are present:
 python -c "from pathlib import Path; print('events', len(list(Path('data/raw').glob('*_events.json')))); print('tracking', len(list(Path('data/raw').glob('*_tracking_data.jsonl')))); print('event types', Path('data/raw/dim_event_type.csv').exists())"
 ```
 
-Optional quick ETL sanity check on a small sample:
+Build the all-match master join table:
 
 ```bash
-python main.py etl --max-rows 5
-```
-
-Build the all-match Step 2 master join table:
-
-```bash
-python main.py step2
+python main.py master-join
 ```
 
 Expected main output:
 
 ```text
 data/processed/model_base/master_join_table.parquet
+data/processed/model_base/master_join_summary.csv
 ```
 
-Build the pre-training table (run this notebook first):
+Build the pre-training table:
 
-```text
-notebooks/pre_training_table.ipynb
+```bash
+python main.py pre-training
 ```
 
 Build the model-ready training table:
 
 ```bash
-python -m driblab.features.training_table
+python main.py training-table
 ```
 
 Train the XGBoost pass detector and regenerate model reports:
 
 ```bash
-python -m driblab.models.pass_detector
+python main.py pass-detector
 ```
 
 To run the full current pipeline from raw data through the pass detector:
 
 ```bash
 conda activate driblabvenv
-python main.py step2
-# open and run notebooks/pre_training_table.ipynb
-python -m driblab.features.training_table
-python -m driblab.models.pass_detector
+python main.py all
 ```
 
 Detailed Step 2 logic is documented in
@@ -474,7 +462,7 @@ Default all-match master join output:
 data/processed/model_base/master_join_table.parquet
 ```
 
-Optional specific-match Step 2 output:
+Optional specific-match sample output currently present locally:
 
 ```text
 data/processed/model_base/master_join_table_<match_id>.parquet
@@ -502,11 +490,16 @@ tolerance window. The nearest-frame distance is saved in
 `nearest_timestamp_distance_sec`, and if multiple events choose the same frame,
 only the event with the smallest distance is kept.
 
-The training-table stage then reads `pre_training_table.parquet`, creates 5-frame
-windows, selects the primary event per window using `p.dist_to_actual_event`,
-computes 2D ball speed, and writes one parquet per split (`training_table_train.parquet`, etc.).
+The pre-training stage reads `master_join_table.parquet`, drops event-source
+columns, and assigns `p.event_label` to each tracking row from the nearest
+selected event within 1 second. The training-table stage then reads
+`pre_training_table.parquet`, keeps one sampled row per 5-frame interval,
+computes rolling 2D ball speed, finds the closest visible player, creates the
+`is_pass` target, and writes one parquet per split
+(`training_table_train.parquet`, etc.).
 
-The model stage trains an XGBoost binary classifier and writes the model,
+The model stage trains an XGBoost binary classifier from
+`ball_speed_avg_xy` and `closest_player_team_id`, then writes the model,
 metadata, metrics, and evaluation figures.
 
 ## Current ML Stages

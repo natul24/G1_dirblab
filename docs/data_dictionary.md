@@ -1,6 +1,7 @@
 # Driblab Pipeline Data Dictionary
 
-This dictionary describes the current Step 2 master join output.
+This dictionary describes the current pipeline outputs used by the pass
+detection model.
 
 The main unit is a tracking frame. Tracking is sampled at about 10 Hz, so the
 master join table has one row per original tracking row. Selected events are
@@ -15,6 +16,9 @@ For the full plain-language build walkthrough, see
 | --- | --- | --- | --- |
 | Master join table | `data/processed/model_base/master_join_table.parquet` | One row per original tracking frame | Raw Step 2 table joining tracking rows to nearest selected event rows. |
 | Master join summary | `data/processed/model_base/master_join_summary.csv` | One row per match | QA counts and nearest timestamp distance summary. |
+| Pre-training table | `data/processed/model_base/pre_training_table.parquet` | One row per original tracking frame | Tracking columns plus the nearest selected event label within the pre-training window. |
+| Training tables | `data/processed/model_base/training_table_{train,validation,test}.parquet` | One sampled row per 5-frame interval | Model-ready split tables with `is_pass`, rolling ball speed, and closest-player features. |
+| Model evaluation report | `reports/model_evaluation_results.json` | One JSON report | Accuracy, F1, ROC-AUC, and confusion matrices for train, validation, and test. |
 
 ## Column Rules
 
@@ -37,6 +41,39 @@ Step 2 does not add modelling features. It does not normalize coordinates,
 calculate speed, calculate acceleration, calculate possession, or calculate
 player speed aggregates. It does unpack raw ball and player position fields from
 the nested tracking columns.
+
+## Current Model Columns
+
+The pre-training table drops `e.*` event-source columns and keeps:
+
+| Column group | Meaning |
+| --- | --- |
+| `t.*` | Tracking columns from the master join. |
+| `p.event_label` | Nearest selected event label assigned within 1 second, or `"no event"`. |
+
+The training-table stage keeps all `t.*` columns and adds:
+
+| Column | Description |
+| --- | --- |
+| `p.event_label` | Event label assigned in the pre-training stage. |
+| `data_split` | Match-level split: `train`, `validation`, or `test`. |
+| `is_pass` | Binary target: `1` when `p.event_label == "PASS"`, otherwise `0`. |
+| `ball_speed_avg_xy` | Centered rolling mean of 2D frame-to-frame ball movement over an 11-frame window. |
+| `closest_player_id` | ID of the visible player closest to the ball at the sampled row. |
+| `closest_player_team_id` | Team ID for `closest_player_id`. |
+
+The current XGBoost pass detector uses only these feature columns:
+
+```text
+ball_speed_avg_xy
+closest_player_team_id
+```
+
+The target column is:
+
+```text
+is_pass
+```
 
 ## Selected Event Types
 
