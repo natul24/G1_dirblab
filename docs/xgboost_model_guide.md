@@ -33,10 +33,10 @@ Raw event + tracking files
 Master join table
     |
     v
-Pre-training table: event labels assigned per frame (notebook)
+Pre-training table: event labels assigned per frame  (notebooks/pre_training_table.ipynb)
     |
     v
-Training table: 5-frame windows with ball speed feature
+Training table: 5-frame windows, ball speed, event selection, closest player
     |
     v
 XGBoost binary classifier
@@ -45,10 +45,12 @@ XGBoost binary classifier
 Model artifacts and evaluation reports
 ```
 
-The model-ready training table is:
+The model-ready training tables are:
 
 ```text
-data/processed/model_base/training_table_simple.parquet
+data/processed/model_base/training_table_train.parquet
+data/processed/model_base/training_table_validation.parquet
+data/processed/model_base/training_table_test.parquet
 ```
 
 ## 3. Training Table Grain And Splits
@@ -60,19 +62,38 @@ the match level before feature engineering to prevent leakage.
 
 ## 4. Training Table Columns
 
-The training table has 7 columns:
+The training table has exactly 10 columns:
 
 | Column | Description |
 |---|---|
 | `t.match_id` | Source match ID. |
 | `t.period` | Tracking period. |
 | `window_time` | Window end time in seconds within the period. |
+| `primary_event_frame` | `t.frame` of the pre-training row used as the primary event. Missing for no-event windows. |
 | `data_split` | `train`, `validation`, or `test`. |
 | `p.event_label` | Primary event type in the window, or `"no event"`. |
 | `is_pass` | Binary target: `1` = PASS, `0` = other. |
 | `ball_speed_avg_xy` | Mean 2D frame-to-frame ball speed in metres per frame. |
+| `closest_player_id` | ID of the closest visible player to the ball at `primary_event_frame`. |
+| `closest_player_team_id` | Team ID for `closest_player_id`. |
 
-## 5. Model Configuration
+## 5. Model Features
+
+The model currently uses two features:
+
+```python
+FEATURES = [
+    "ball_speed_avg_xy",
+    "closest_player_team_id",
+]
+```
+
+`ball_speed_avg_xy` is numeric. `closest_player_team_id` is a string team identifier
+that is label-encoded to an integer before training. Both are filled with `0` when
+missing (no-event windows have no closest player; windows with missing ball tracking
+have no ball speed).
+
+## 6. Model Configuration
 
 The script uses:
 
@@ -90,7 +111,7 @@ early_stopping_rounds = 20
 threshold = 0.5
 ```
 
-## 6. Generated Files
+## 7. Generated Files
 
 The training script saves:
 
@@ -104,10 +125,9 @@ reports/figures/roc_curve.png
 reports/figures/confusion_matrices.png
 ```
 
-`feature_encoders.pkl` is currently an empty dictionary placeholder because the
-model does not encode categorical features.
+`feature_encoders.pkl` is currently an empty dictionary placeholder.
 
-## 7. How To Run
+## 8. How To Run
 
 Run `notebooks/pre_training_table.ipynb` first to build the pre-training table, then:
 
@@ -123,7 +143,7 @@ Explore the same workflow interactively:
 notebooks/xgboost_pass_detector.ipynb
 ```
 
-## 8. Related Documentation
+## 9. Related Documentation
 
 - Training table details: `docs/training_table_walkthrough.md`
 - Master join details: `docs/master_join_walkthrough.md`
@@ -132,9 +152,10 @@ notebooks/xgboost_pass_detector.ipynb
 - Model module: `src/driblab/models/pass_detector.py`
 - Model notebook: `notebooks/xgboost_pass_detector.ipynb`
 
-## 9. Practical Next Steps
+## 10. Practical Next Steps
 
 1. Tune the decision threshold using validation precision, recall, and F1.
-2. Add class-imbalance handling, such as `scale_pos_weight`.
-3. Compare against a baseline model that always predicts no pass.
-4. Re-run the notebook and reports after every feature or threshold change.
+2. Add class-imbalance handling with `scale_pos_weight`.
+3. Expand the feature set with additional columns from the training table.
+4. Compare against a baseline model that always predicts no pass.
+5. Re-run the notebook and reports after every feature or threshold change.
