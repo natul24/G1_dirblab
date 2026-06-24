@@ -1,99 +1,94 @@
-"""Command-line entrypoint for the Driblab pipeline.
+"""Pipeline entrypoint for Driblab.
 
-This file contains the terminal interface for running each project stage:
-ETL checks and Step 2 master join creation. It reads `config.yaml`, converts
-config values into each stage's dataclass, calls the stage runner, and prints
-the key output paths and summary metrics.
+Run stages in this order:
+  1. master-join      Build master_join_table.parquet from all raw match files
+  2. pre-training     [notebook only] notebooks/pre_training_table.ipynb
+  3. training-table   Build training_table_{train,validation,test}.parquet
+  4. pass-detector    Train and save the XGBoost pass detector
+
+Usage:
+  python main.py master-join
+  python main.py training-table
+  python main.py pass-detector
+  python main.py all            # runs 1, 3, 4 — stage 2 must be run manually
 """
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
-from typing import Any
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from driblab.config import CONFIG_PATH  # noqa: E402
-from driblab.config import load_project_config  # noqa: E402
-from driblab.config import project_path  # noqa: E402
-from driblab.etl.master_join import Step2BatchConfig  # noqa: E402
-from driblab.etl.master_join import run_step2_batch  # noqa: E402
-from driblab.etl.pipeline import run_pipeline as run_etl_pipeline  # noqa: E402
+from driblab.config import MODEL_BASE_DATA_DIR, RAW_DATA_DIR
+from driblab.etl.master_join import Step2BatchConfig, run_step2_batch
+from driblab.features.training_table import main as _training_table_main
+from driblab.models.pass_detector import train_pass_detector
 
 
-def _path(config: dict[str, Any], key: str) -> Path:
-    return project_path(config["paths"][key])
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run Driblab project stages.",
+def run_master_join() -> None:
+    config = Step2BatchConfig(
+        data_dir=RAW_DATA_DIR,
+        output_dir=MODEL_BASE_DATA_DIR,
+        model_base_dir=MODEL_BASE_DATA_DIR,
+        all_matches=True,
     )
-    parser.add_argument(
-        "--config",
-        default=CONFIG_PATH,
-        type=Path,
-        help="Central YAML config file.",
-    )
-    subparsers = parser.add_subparsers(dest="stage", required=True)
-
-    etl = subparsers.add_parser("etl")
-    etl.add_argument("--match-id")
-    etl.add_argument("--max-rows", type=int)
-
-    step2 = subparsers.add_parser("step2")
-    step2.add_argument("--match-id")
-    step2.add_argument("--all-matches", action="store_true")
-
-    return parser.parse_args()
-
-
-def run_etl(args: argparse.Namespace, config: dict[str, Any]) -> None:
-    etl_config = config["etl"]
-    run_etl_pipeline(
-        data_dir=_path(config, "raw_data_dir"),
-        match_id=args.match_id or str(etl_config["default_match_id"]),
-        max_rows=args.max_rows or int(etl_config["max_rows"]),
+    result = run_step2_batch(config)
+    print(
+        f"\nMaster join complete: {result['rows']:,} rows"
+        f" across {len(result['match_ids'])} matches"
     )
 
 
-def run_step2(args: argparse.Namespace, config: dict[str, Any]) -> None:
-    step_config = config["step2"]
-    all_matches = args.all_matches or (
-        args.match_id is None
-        and bool(step_config["all_matches"])
-    )
-    batch_config = Step2BatchConfig(
-        data_dir=_path(config, "raw_data_dir"),
-        output_dir=_path(config, "model_base_dir"),
-        model_base_dir=_path(config, "model_base_dir"),
-        match_id=args.match_id or str(step_config["match_id"]),
-        all_matches=all_matches,
-        event_type_names=tuple(step_config.get("event_type_names", [])),
-    )
-    result = run_step2_batch(batch_config)
-    print("\nStep 2 complete")
-    print(f"Matches: {len(result['match_ids']):,}")
-    print(f"Rows: {result['rows']:,}")
-    print("Outputs:")
-    for name, path in result["outputs"].items():
-        print(f"  {name}: {path}")
+def run_training_table() -> None:
+    pre_training_path = MODEL_BASE_DATA_DIR / "pre_training_table.parquet"
+    if not pre_training_path.exists():
+        sys.exit(
+            f"Missing {pre_training_path}\n"
+            "Run notebooks/pre_training_table.ipynb first."
+        )
+    _training_table_main()
+
+
+def run_pass_detector() -> None:
+    train_pass_detector()
+
+
+STAGES = {
+    "master-join"    : run_master_join,
+    "training-table" : run_training_table,
+    "pass-detector"  : run_pass_detector,
+}
+
+USAGE = """\
+Usage: python main.py <stage>
+
+Stages:
+  master-join      Build master_join_table.parquet from all raw match files
+  training-table   Build training_table_*.parquet (requires pre_training_table.ipynb first)
+  pass-detector    Train and save the XGBoost pass detector
+  all              Run master-join → training-table → pass-detector in sequence
+"""
 
 
 def main() -> None:
-    args = parse_args()
-    config = load_project_config(args.config)
+    if len(sys.argv) < 2 or sys.argv[1] not in {*STAGES, "all"}:
+        print(USAGE)
+        sys.exit(1)
 
-    if args.stage == "etl":
-        run_etl(args, config)
-    elif args.stage == "step2":
-        run_step2(args, config)
+    stage = sys.argv[1]
+
+    if stage == "all":
+        for name, fn in STAGES.items():
+            print(f"\n{'─' * 50}")
+            print(f"  {name}")
+            print(f"{'─' * 50}\n")
+            fn()
+    else:
+        STAGES[stage]()
 
 
 if __name__ == "__main__":
