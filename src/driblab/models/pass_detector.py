@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import (
@@ -38,20 +39,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 
 FEATURES = [
-    "ball_x_avg",
-    "ball_y_avg",
-    "ball_z_avg",
-    "ball_speed_avg",
-    "ball_speed_change",
-    "ball_direction_x",
-    "ball_direction_y",
-    "closest_player_dist_start",
-    "closest_player_dist_end",
-    "closest_player_dist_change",
-    "n_players_near_ball",
-    "n_unique_players_in_frame",
-    "is_attacking_direction",
-    "team_changed",
+    "ball_speed_avg_xy",
+    "closest_player_team_id",
 ]
 TARGET = "is_pass"
 MODEL_DIR = ARTIFACTS_DIR / "models"
@@ -62,7 +51,7 @@ FIGURE_DIR = REPORTS_DIR / "figures"
 def load_training_tables(
     input_dir: Path = MODEL_BASE_DATA_DIR,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load normalized train, validation, and test training tables."""
+    """Load train, validation, and test training tables."""
     input_dir = input_dir.expanduser().resolve()
     train_df = pd.read_parquet(input_dir / "training_table_train.parquet")
     validation_df = pd.read_parquet(
@@ -81,7 +70,16 @@ def _prepare_matrix(
     if missing:
         raise ValueError(f"Missing model columns: {missing}")
 
-    x_values = table[features].fillna(0)
+    encoded = {}
+    for col in features:
+        series = table[col]
+        if pd.api.types.is_numeric_dtype(series):
+            encoded[col] = series.to_numpy(dtype=float, na_value=np.nan)
+        else:
+            codes = pd.Categorical(series).codes.astype(float)
+            codes[codes == -1] = np.nan
+            encoded[col] = codes
+    x_values = pd.DataFrame(encoded, index=table.index).fillna(0)
     y_values = table[target].astype(int)
     dmatrix = xgb.DMatrix(
         x_values,
