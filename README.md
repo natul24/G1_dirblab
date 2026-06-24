@@ -207,7 +207,7 @@ python -m flake8 .
 | `src/driblab/etl/pipeline.py` | Step 1 ETL checks | Raw event/tracking loaders plus coordinate, asset, camera, ball, and consistency diagnostics. |
 | `src/driblab/etl/master_join.py` | Step 2 foundation | Builds the tracking-first master join table from raw events and tracking data. |
 | `src/driblab/features/match_splits.py` | Split management | Assigns complete matches to `train`, `validation`, and `test` without row-level leakage. |
-| `src/driblab/features/training_table.py` | Feature engineering | Builds 5-frame non-overlapping windows from `pre_training_table.parquet`, selects the primary event per window using `p.dist_to_actual_event`, computes 2D ball speed, and writes `training_table_simple.parquet`. |
+| `src/driblab/features/training_table.py` | Feature engineering | Builds 5-frame non-overlapping windows from `pre_training_table.parquet`, selects the primary event per window, computes 2D ball speed, finds the closest visible player at the event frame, and writes one parquet per split. |
 | `src/driblab/models/pass_detector.py` | Model training | Trains the XGBoost pass detector and writes model artifacts, metrics, and evaluation figures. |
 
 ## Data Inventory
@@ -422,6 +422,7 @@ To run the full current pipeline from raw data through the pass detector:
 ```bash
 conda activate driblabvenv
 python main.py step2
+# open and run notebooks/pre_training_table.ipynb
 python -m driblab.features.training_table
 python -m driblab.models.pass_detector
 ```
