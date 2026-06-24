@@ -147,7 +147,16 @@ def build_training_table(pre_training_path: Path) -> pd.DataFrame:
         "closest_player_team_id",
     ]
     df = df[t_cols + added_cols]
-    print(f"Built {len(df):,} rows × {df.shape[1]} columns\n")
+
+    # Sample: keep the first frame of every non-overlapping 5-frame window.
+    # Within each (match_id, period) group (already sorted by t.frame), rows at
+    # positions 0, 5, 10, … are selected — one row per 0.5-second window.
+    row_in_group = df.groupby(
+        ["t.match_id", "t.period"], sort=False
+    ).cumcount()
+    df = df.loc[row_in_group % 5 == 0].reset_index(drop=True)
+
+    print(f"Built {len(df):,} rows × {df.shape[1]} columns  (1 per 5-frame window)\n")
     return df
 
 
