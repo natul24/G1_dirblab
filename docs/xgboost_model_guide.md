@@ -62,20 +62,16 @@ the match level before feature engineering to prevent leakage.
 
 ## 4. Training Table Columns
 
-The training table has exactly 10 columns:
+The training table has 127 columns: all 121 `t.*` tracking columns from the pre-training table, plus 6 added columns:
 
 | Column | Description |
 |---|---|
-| `t.match_id` | Source match ID. |
-| `t.period` | Tracking period. |
-| `window_time` | Window end time in seconds within the period. |
-| `primary_event_frame` | `t.frame` of the pre-training row used as the primary event. Missing for no-event windows. |
-| `data_split` | `train`, `validation`, or `test`. |
-| `p.event_label` | Primary event type in the window, or `"no event"`. |
+| `p.event_label` | Event label inherited from the pre-training table. |
+| `data_split` | `train`, `validation`, or `test` — assigned at the match level. |
 | `is_pass` | Binary target: `1` = PASS, `0` = other. |
-| `ball_speed_avg_xy` | Mean 2D frame-to-frame ball speed in metres per frame. |
-| `closest_player_id` | ID of the closest visible player to the ball at `primary_event_frame`. |
-| `closest_player_team_id` | Team ID for `closest_player_id`. |
+| `ball_speed_avg_xy` | Rolling mean of 2D frame-to-frame ball speed over ±5 frames (m / frame). |
+| `closest_player_id` | ID of the visible player closest to the ball at this row's frame. |
+| `closest_player_team_id` | Team ID of the closest visible player at this row's frame. |
 
 ## 5. Model Features
 

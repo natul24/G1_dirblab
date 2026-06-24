@@ -1,8 +1,8 @@
-"""Build training windows for pass classification.
+"""Build training table for pass classification.
 
-Reads pre_training_table.parquet, groups frames into 5-frame non-overlapping
-windows, computes 2D ball speed, selects the primary event per window,
-and computes the closest visible player to the ball at that event frame.
+Reads pre_training_table.parquet, computes rolling 2D ball speed over
+±5 frames, identifies the closest visible player to the ball for every
+row, assigns match-level data splits, and derives the pass binary target.
 Writes one parquet per split.
 """
 
@@ -19,60 +19,27 @@ from driblab.config import CONFIG_PATH, MODEL_BASE_DATA_DIR
 from driblab.features import match_splits
 
 
-WINDOW_SIZE = 5
-
-OUTPUT_COLUMNS = [
-    "t.match_id",
-    "t.period",
-    "window_time",
-    "primary_event_frame",
-    "data_split",
-    "p.event_label",
-    "is_pass",
-    "ball_speed_avg_xy",
-    "closest_player_id",
-    "closest_player_team_id",
-]
-
 SPLIT_OUTPUT_PATHS = {
     split: MODEL_BASE_DATA_DIR / f"training_table_{split}.parquet"
     for split in ["train", "validation", "test"]
 }
 
-_BASE_INPUT_COLUMNS = [
-    "t.match_id",
-    "t.period",
-    "t.frame",
-    "t.ball_x",
-    "t.ball_y",
-    "p.event_label",
-    "p.dist_to_actual_event",
-]
-
 _PLAYER_X_PATTERN = re.compile(r"t\.player_(\d+)_x$")
 
 
-def _player_columns(parquet_path: Path) -> tuple[list[str], list[str]]:
-    """Return (columns_to_load, slot_list) for player data in the parquet."""
-    schema_names = set(pq.read_schema(parquet_path).names)
-    slots = sorted(
+def _player_slots(schema_names: set[str]) -> list[str]:
+    """Return sorted slot identifiers for player columns present in the schema."""
+    return sorted(
         _PLAYER_X_PATTERN.match(col).group(1)
         for col in schema_names
         if _PLAYER_X_PATTERN.match(col)
     )
-    cols = []
-    for slot in slots:
-        for suffix in ("_x", "_y", "_visible", "_id", "_team_id"):
-            col = f"t.player_{slot}{suffix}"
-            if col in schema_names:
-                cols.append(col)
-    return cols, slots
 
 
 def _closest_player(
     rows: pd.DataFrame, slots: list[str]
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorized closest visible player for each row in `rows`.
+    """Vectorized closest visible player to ball for every row.
 
     Returns (closest_player_id, closest_player_team_id) as object arrays
     aligned to rows. Values are NaN where ball position is missing or no
@@ -84,14 +51,8 @@ def _closest_player(
     if n == 0 or not slots:
         return nan_col, nan_col.copy()
 
-    ball_x = pd.to_numeric(
-        rows["t.ball_x"],
-        errors="coerce",
-    ).to_numpy(dtype=float)
-    ball_y = pd.to_numeric(
-        rows["t.ball_y"],
-        errors="coerce",
-    ).to_numpy(dtype=float)
+    ball_x = pd.to_numeric(rows["t.ball_x"], errors="coerce").to_numpy(dtype=float)
+    ball_y = pd.to_numeric(rows["t.ball_y"], errors="coerce").to_numpy(dtype=float)
     ball_missing = np.isnan(ball_x) | np.isnan(ball_y)
 
     n_slots = len(slots)
@@ -135,12 +96,31 @@ def _closest_player(
     return closest_ids, closest_teams
 
 
-def build_training_table(pre_training_path: Path) -> pd.DataFrame:
-    player_load_cols, player_slots = _player_columns(pre_training_path)
-    input_columns = _BASE_INPUT_COLUMNS + player_load_cols
+def _add_ball_speed(df: pd.DataFrame) -> pd.DataFrame:
+    """Add ball_speed_avg_xy: rolling mean of 2D frame-to-frame speed over ±5 frames.
 
-    df = pd.read_parquet(pre_training_path, columns=input_columns)
-    print(f"Loaded {len(df):,} rows\n")
+    Computed per (match_id, period) group so steps never cross boundaries.
+    The rolling window is 11 frames wide (center=True), giving each row an
+    average speed drawn from 5 frames before and 5 frames after.
+    """
+    parts = []
+    for _, group in df.groupby(["t.match_id", "t.period"], sort=False):
+        bx = pd.to_numeric(group["t.ball_x"], errors="coerce")
+        by = pd.to_numeric(group["t.ball_y"], errors="coerce")
+        step = np.sqrt(bx.diff() ** 2 + by.diff() ** 2)
+        parts.append(step.rolling(window=11, center=True, min_periods=1).mean())
+
+    df = df.copy()
+    df["ball_speed_avg_xy"] = pd.concat(parts).reindex(df.index)
+    return df
+
+
+def build_training_table(pre_training_path: Path) -> pd.DataFrame:
+    schema_names = set(pq.read_schema(pre_training_path).names)
+    slots = _player_slots(schema_names)
+
+    df = pd.read_parquet(pre_training_path)
+    print(f"Loaded {len(df):,} rows, {df.shape[1]} columns\n")
 
     splits = match_splits.load_match_splits(CONFIG_PATH)
     df = match_splits.add_data_split_column(df, splits, match_col="t.match_id")
@@ -149,100 +129,26 @@ def build_training_table(pre_training_path: Path) -> pd.DataFrame:
         kind="mergesort",
     ).reset_index(drop=True)
 
-    group_cols = ["t.match_id", "t.period"]
-    grouped = df.groupby(group_cols, sort=False)
-    row_in_group = grouped.cumcount()
-    group_size = grouped["t.frame"].transform("size")
-    complete_row_count = (group_size // WINDOW_SIZE) * WINDOW_SIZE
-    df = df.loc[row_in_group < complete_row_count].copy()
-    row_in_group = row_in_group.loc[df.index]
+    df = _add_ball_speed(df)
 
-    df["_window_idx"] = row_in_group // WINDOW_SIZE
-    df["_frame_in_window"] = row_in_group % WINDOW_SIZE
-    window_cols = ["t.match_id", "t.period", "_window_idx"]
+    closest_ids, closest_teams = _closest_player(df, slots)
+    df["closest_player_id"] = closest_ids
+    df["closest_player_team_id"] = closest_teams
 
-    dx = pd.to_numeric(df["t.ball_x"], errors="coerce").diff()
-    dy = pd.to_numeric(df["t.ball_y"], errors="coerce").diff()
-    same_window_step = df["_frame_in_window"] > 0
-    df["_ball_step_xy"] = np.where(
-        same_window_step,
-        np.sqrt(dx**2 + dy**2),
-        np.nan,
-    )
+    df["is_pass"] = (df["p.event_label"] == "PASS").astype(int)
 
-    base_windows = (
-        df.loc[df["_frame_in_window"] == 0]
-        .assign(
-            window_time=lambda t: (t["_window_idx"] + 1) * 0.5,
-            **{"p.event_label": "no event"},
-        )[
-            [
-                "t.match_id",
-                "t.period",
-                "_window_idx",
-                "window_time",
-                "data_split",
-                "p.event_label",
-            ]
-        ]
-    )
-
-    speed_by_window = (
-        df.groupby(window_cols, sort=False)["_ball_step_xy"]
-        .mean()
-        .rename("ball_speed_avg_xy")
-        .reset_index()
-    )
-
-    event_rows = df.loc[df["p.event_label"] != "no event"].copy()
-    if event_rows.empty:
-        event_by_window = pd.DataFrame(
-            columns=[
-                *window_cols,
-                "p.event_label",
-                "primary_event_frame",
-                "closest_player_id",
-                "closest_player_team_id",
-            ]
-        )
-    else:
-        event_rows["_event_distance"] = pd.to_numeric(
-            event_rows["p.dist_to_actual_event"], errors="coerce"
-        ).fillna(np.inf)
-        event_indices = (
-            event_rows.groupby(window_cols, sort=False)["_event_distance"]
-            .idxmin()
-            .to_numpy()
-        )
-        primary_rows = event_rows.loc[event_indices]
-        closest_ids, closest_teams = _closest_player(
-            primary_rows,
-            player_slots,
-        )
-
-        event_by_window = (
-            primary_rows[[*window_cols, "p.event_label", "t.frame"]]
-            .rename(columns={"t.frame": "primary_event_frame"})
-            .assign(
-                closest_player_id=closest_ids,
-                closest_player_team_id=closest_teams,
-            )
-        )
-
-    training_table = (
-        base_windows.drop(columns=["p.event_label"])
-        .merge(event_by_window, on=window_cols, how="left")
-        .merge(speed_by_window, on=window_cols, how="left")
-    )
-    training_table["p.event_label"] = training_table[
-        "p.event_label"
-    ].fillna("no event")
-    training_table["is_pass"] = (
-        training_table["p.event_label"] == "PASS"
-    ).astype(int)
-    training_table = training_table[OUTPUT_COLUMNS]
-    print(f"Created {len(training_table):,} windows\n")
-    return training_table
+    t_cols = [c for c in df.columns if c.startswith("t.")]
+    added_cols = [
+        "p.event_label",
+        "data_split",
+        "is_pass",
+        "ball_speed_avg_xy",
+        "closest_player_id",
+        "closest_player_team_id",
+    ]
+    df = df[t_cols + added_cols]
+    print(f"Built {len(df):,} rows × {df.shape[1]} columns\n")
+    return df
 
 
 def main() -> None:
