@@ -290,20 +290,10 @@ e.event.event_type_name = "no event"
 Run the default all-match build configured in `config.yaml`:
 
 ```bash
-python main.py step2
+python main.py master-join
 ```
 
-Run a specific match:
-
-```bash
-python main.py step2 --match-id 678949
-```
-
-Run all matches explicitly:
-
-```bash
-python main.py step2 --all-matches
-```
-
-Rerunning Step 2 overwrites the same master join table and summary files. It
-does not create duplicate dated or timestamped outputs.
+`main.py master-join` builds the all-match table from every raw match that has
+both an events file and a tracking file. Rerunning it overwrites the same master
+join table and summary files. It does not create duplicate dated or timestamped
+outputs.
