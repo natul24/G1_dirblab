@@ -11,6 +11,7 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn import metrics
 import xgboost as xgb
 from sklearn.metrics import (
     accuracy_score,
@@ -142,6 +143,9 @@ def train_pass_detector(
         verbose_eval=50,
     )
 
+    # ------------------------------------------------------------
+    # 1. Tune frame-level threshold using validation F1
+    # ------------------------------------------------------------
     best_threshold, threshold_results = find_best_f1_threshold(
         model=model,
         dmatrix=dvalidation,
@@ -165,36 +169,139 @@ def train_pass_detector(
         f"{threshold_results.loc[threshold_results['threshold'] == best_threshold, 'f1'].iloc[0]:.4f}"
     )
 
+    # ------------------------------------------------------------
+    # 2. Frame-level metrics using best frame-level threshold
+    # ------------------------------------------------------------
     metrics = {
-        "train": evaluate_split(model, dtrain, y_train, threshold=best_threshold),
+        "train": evaluate_split(
+            model,
+            dtrain,
+            y_train,
+            threshold=best_threshold,
+        ),
         "validation": evaluate_split(
-         model,
+            model,
             dvalidation,
             y_validation,
             threshold=best_threshold,
         ),
-        "test": evaluate_split(model, dtest, y_test, threshold=best_threshold),
+        "test": evaluate_split(
+            model,
+            dtest,
+            y_test,
+            threshold=best_threshold,
+        ),
     }
-    
+
     predictions = {
-        "train": {"y_true": y_train, "y_proba": model.predict(dtrain)},
+        "train": {
+            "y_true": y_train,
+            "y_proba": model.predict(dtrain),
+        },
         "validation": {
             "y_true": y_validation,
             "y_proba": model.predict(dvalidation),
         },
-        "test": {"y_true": y_test, "y_proba": model.predict(dtest)},
+        "test": {
+            "y_true": y_test,
+            "y_proba": model.predict(dtest),
+        },
     }
+
+    # ------------------------------------------------------------
+    # 3. Tune NMS parameters on validation set
+    # ------------------------------------------------------------
+    print("\nTuning NMS parameters on validation set...")
+
+    nms_tuning_rows = []
+
+    for nms_threshold in [0.23, 0.25, 0.26, 0.29]:
+        for suppress_window_sec in [1.25, 1.5, 1.75]:
+            validation_event_metrics = run_nms_evaluation(
+                split_name="validation",
+                table=validation_df,
+                y_true=y_validation,
+                y_proba=predictions["validation"]["y_proba"],
+                threshold=nms_threshold,
+                suppress_window_sec=suppress_window_sec,
+                tolerance_sec=1.0,
+            )
+
+            nms_tuning_rows.append(validation_event_metrics)
+
+    nms_tuning_df = pd.DataFrame(nms_tuning_rows).sort_values(
+        ["f1", "precision"],
+        ascending=False,
+    )
+
+    print("\nValidation NMS tuning results:")
+    print(
+        nms_tuning_df[
+            [
+                "threshold",
+                "suppress_window_sec",
+                "precision",
+                "recall",
+                "f1",
+                "tp",
+                "fp",
+                "fn",
+                "nms_final_pass_detections",
+                "true_events",
+            ]
+        ].to_string(index=False)
+    )
+
+    best_nms_row = nms_tuning_df.iloc[0]
+    best_nms_threshold = float(best_nms_row["threshold"])
+    best_suppress_window_sec = float(best_nms_row["suppress_window_sec"])
+
+    print("\nBest NMS parameters from validation:")
+    print(f"  NMS threshold: {best_nms_threshold:.2f}")
+    print(f"  Suppression window sec: {best_suppress_window_sec:.2f}")
+    print(f"  Validation event F1: {best_nms_row['f1']:.4f}")
+
+    # ------------------------------------------------------------
+    # 4. Final NMS evaluation using best validation NMS parameters
+    # ------------------------------------------------------------
+    nms_metrics = {
+        "validation": run_nms_evaluation(
+            split_name="validation",
+            table=validation_df,
+            y_true=y_validation,
+            y_proba=predictions["validation"]["y_proba"],
+            threshold=best_nms_threshold,
+            suppress_window_sec=best_suppress_window_sec,
+            tolerance_sec=1.0,
+        ),
+        "test": run_nms_evaluation(
+            split_name="test",
+            table=test_df,
+            y_true=y_test,
+            y_proba=predictions["test"]["y_proba"],
+            threshold=best_nms_threshold,
+            suppress_window_sec=best_suppress_window_sec,
+            tolerance_sec=1.0,
+        ),
+    }
+
     importance = feature_importance(model)
 
+    # ------------------------------------------------------------
+    # 5. Save model and reports
+    # ------------------------------------------------------------
     model_dir = model_dir.expanduser().resolve()
     report_dir = report_dir.expanduser().resolve()
     figure_dir = figure_dir.expanduser().resolve()
+
     model_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
     figure_dir.mkdir(parents=True, exist_ok=True)
+
     model_path = model_dir / "pass_detector.json"
     metadata_path = model_dir / "pass_detector_metadata.json"
     encoders_path = model_dir / "feature_encoders.pkl"
+
     report_paths = save_reports(
         report_dir,
         figure_dir,
@@ -206,24 +313,37 @@ def train_pass_detector(
     metadata = {
         "features": FEATURES,
         "target": TARGET,
-        "threshold": best_threshold,
+        "frame_threshold": best_threshold,
+        "nms_threshold": best_nms_threshold,
+        "nms_suppress_window_sec": best_suppress_window_sec,
         "params": params,
         "best_iteration": int(model.best_iteration),
     }
 
     model.save_model(model_path)
+
     metadata_path.write_text(
         json.dumps(metadata, indent=2),
     )
+
     joblib.dump({}, encoders_path)
 
+    # ------------------------------------------------------------
+    # 6. Print final results
+    # ------------------------------------------------------------
     print(f"\nBest round: {model.best_iteration + 1}")
     _print_metrics(metrics)
+
+    print("\nEvent-level metrics after Temporal NMS:")
+    _print_nms_metrics(nms_metrics)
+
     print("\nTop 10 Features:")
     print(importance.head(10).to_string(index=False))
+
     print(f"\nSaved model: {model_path}")
     print(f"Saved metadata: {metadata_path}")
     print(f"Saved feature encoders: {encoders_path}")
+
     for report_name, report_path in report_paths.items():
         print(f"Saved {report_name}: {report_path}")
 
@@ -236,6 +356,7 @@ def train_pass_detector(
             for report_name, report_path in report_paths.items()
         },
         "metrics": metrics,
+        "nms_metrics": nms_metrics,
     }
 
 
@@ -295,6 +416,271 @@ def find_best_f1_threshold(
     best_threshold = float(best_row["threshold"])
 
     return best_threshold, threshold_results
+
+
+def build_prediction_frame(
+    table: pd.DataFrame,
+    y_true: pd.Series,
+    y_proba: np.ndarray,
+    threshold: float,
+) -> pd.DataFrame:
+    """Build a frame-level prediction table for NMS post-processing."""
+    required_cols = [
+        "t.match_id",
+        "t.period",
+        "t.frame",
+        "t.Videotimestamp",
+    ]
+
+    missing = [col for col in required_cols if col not in table.columns]
+    if missing:
+        raise ValueError(f"Missing columns needed for NMS: {missing}")
+
+    pred_df = table[required_cols].copy()
+
+    pred_df = pred_df.rename(
+        columns={
+            "t.match_id": "match_id",
+            "t.period": "period",
+            "t.frame": "frame",
+            "t.Videotimestamp": "time_sec",
+        }
+    )
+
+    pred_df["is_pass_true"] = y_true.to_numpy(dtype=int)
+    pred_df["pass_proba"] = y_proba
+    pred_df["pred_pass_raw"] = pred_df["pass_proba"] > threshold
+
+    return pred_df
+
+
+def temporal_nms(
+    pred_df: pd.DataFrame,
+    score_col: str = "pass_proba",
+    time_col: str = "time_sec",
+    group_cols: tuple[str, str] = ("match_id", "period"),
+    score_threshold: float = 0.5,
+    suppress_window_sec: float = 1.0,
+) -> pd.DataFrame:
+    """Temporal Non-Maximum Suppression for frame-level pass predictions.
+
+    Keeps only the highest-confidence pass prediction within a local time window.
+    """
+    output = pred_df.copy()
+    output["pred_pass_raw"] = output[score_col] > score_threshold
+    output["pred_pass_nms"] = False
+
+    candidates = output[output["pred_pass_raw"]].copy()
+    candidates = candidates.dropna(subset=[time_col, score_col])
+
+    kept_indices = []
+
+    for _, group in candidates.groupby(list(group_cols), sort=False):
+        group = group.sort_values(score_col, ascending=False)
+
+        kept_times = []
+
+        for idx, row in group.iterrows():
+            candidate_time = row[time_col]
+
+            too_close = any(
+                abs(candidate_time - kept_time) <= suppress_window_sec
+                for kept_time in kept_times
+            )
+
+            if not too_close:
+                kept_indices.append(idx)
+                kept_times.append(candidate_time)
+
+    output.loc[kept_indices, "pred_pass_nms"] = True
+
+    return output
+
+
+def extract_true_pass_events(
+    df: pd.DataFrame,
+    true_col: str = "is_pass_true",
+    time_col: str = "time_sec",
+    group_cols: tuple[str, str] = ("match_id", "period"),
+    max_gap_sec: float = 1.0,
+) -> pd.DataFrame:
+    """Convert frame-level true pass labels into approximate event clusters."""
+    true_events = []
+
+    positive = df[df[true_col].astype(bool)].copy()
+    positive = positive.dropna(subset=[time_col])
+
+    for group_key, group in positive.groupby(list(group_cols), sort=False):
+        group = group.sort_values(time_col).copy()
+
+        time_diff = group[time_col].diff().fillna(999)
+        cluster_id = (time_diff > max_gap_sec).cumsum()
+
+        for _, cluster in group.groupby(cluster_id):
+            row = {
+                "true_event_time": float(cluster[time_col].median()),
+                "true_start_time": float(cluster[time_col].min()),
+                "true_end_time": float(cluster[time_col].max()),
+                "true_frames": int(len(cluster)),
+            }
+
+            for col, value in zip(group_cols, group_key):
+                row[col] = value
+
+            true_events.append(row)
+
+    return pd.DataFrame(true_events)
+
+
+def extract_nms_detections(
+    df: pd.DataFrame,
+    pred_col: str = "pred_pass_nms",
+    score_col: str = "pass_proba",
+    time_col: str = "time_sec",
+    group_cols: tuple[str, str] = ("match_id", "period"),
+) -> pd.DataFrame:
+    """Convert NMS-positive frames into final predicted pass detections."""
+    detections = df[df[pred_col].astype(bool)].copy()
+    detections = detections.dropna(subset=[time_col])
+
+    keep_cols = list(group_cols) + [time_col, score_col, "frame"]
+
+    detections = detections[keep_cols].rename(
+        columns={
+            time_col: "pred_event_time",
+            score_col: "pred_score",
+        }
+    )
+
+    return detections.sort_values(
+        list(group_cols) + ["pred_event_time"]
+    ).reset_index(drop=True)
+
+
+def evaluate_event_level_detections(
+    true_events: pd.DataFrame,
+    detections: pd.DataFrame,
+    group_cols: tuple[str, str] = ("match_id", "period"),
+    tolerance_sec: float = 1.0,
+) -> dict[str, Any]:
+    """Match NMS detections to true pass events and compute event-level metrics."""
+    true_events = true_events.copy().reset_index(drop=True)
+    detections = detections.copy().reset_index(drop=True)
+
+    if true_events.empty:
+        tp = 0
+        fp = len(detections)
+        fn = 0
+        precision = 0.0
+        recall = 0.0
+        f1 = 0.0
+
+        return {
+            "true_events": 0,
+            "predicted_events_after_nms": int(len(detections)),
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+        }
+
+    true_events["matched"] = False
+    detections["matched"] = False
+
+    for det_idx, det in detections.iterrows():
+        same_group = pd.Series(True, index=true_events.index)
+
+        for col in group_cols:
+            same_group &= true_events[col] == det[col]
+
+        candidates = true_events[same_group & ~true_events["matched"]].copy()
+
+        if candidates.empty:
+            continue
+
+        candidates["abs_time_error"] = (
+            candidates["true_event_time"] - det["pred_event_time"]
+        ).abs()
+
+        candidates = candidates[candidates["abs_time_error"] <= tolerance_sec]
+
+        if candidates.empty:
+            continue
+
+        best_true_idx = candidates["abs_time_error"].idxmin()
+
+        true_events.loc[best_true_idx, "matched"] = True
+        detections.loc[det_idx, "matched"] = True
+
+    tp = int(detections["matched"].sum())
+    fp = int((~detections["matched"]).sum())
+    fn = int((~true_events["matched"]).sum())
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if (precision + recall) > 0
+        else 0.0
+    )
+
+    return {
+        "true_events": int(len(true_events)),
+        "predicted_events_after_nms": int(len(detections)),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+    }
+
+
+def run_nms_evaluation(
+    split_name: str,
+    table: pd.DataFrame,
+    y_true: pd.Series,
+    y_proba: np.ndarray,
+    threshold: float,
+    suppress_window_sec: float = 1.0,
+    tolerance_sec: float = 1.0,
+) -> dict[str, Any]:
+    """Run temporal NMS and event-level evaluation for one split."""
+    pred_df = build_prediction_frame(
+        table=table,
+        y_true=y_true,
+        y_proba=y_proba,
+        threshold=threshold,
+    )
+
+    nms_df = temporal_nms(
+        pred_df,
+        score_threshold=threshold,
+        suppress_window_sec=suppress_window_sec,
+    )
+
+    true_events = extract_true_pass_events(nms_df)
+    detections = extract_nms_detections(nms_df)
+
+    event_metrics = evaluate_event_level_detections(
+        true_events=true_events,
+        detections=detections,
+        tolerance_sec=tolerance_sec,
+    )
+
+    event_metrics["split"] = split_name
+    event_metrics["threshold"] = float(threshold)
+    event_metrics["suppress_window_sec"] = float(suppress_window_sec)
+    event_metrics["tolerance_sec"] = float(tolerance_sec)
+    event_metrics["raw_predicted_pass_frames"] = int(nms_df["pred_pass_raw"].sum())
+    event_metrics["nms_final_pass_detections"] = int(
+        nms_df["pred_pass_nms"].sum()
+    )
+
+    return event_metrics
+
 
 def feature_importance(model: xgb.Booster) -> pd.DataFrame:
     """Return feature importance sorted by split count."""
@@ -449,6 +835,21 @@ def _print_metrics(metrics: dict[str, dict[str, Any]]) -> None:
         print(f"    TN={split_metrics['tn']}, FP={split_metrics['fp']}")
         print(f"    FN={split_metrics['fn']}, TP={split_metrics['tp']}")
 
+def _print_nms_metrics(nms_metrics: dict[str, dict[str, Any]]) -> None:
+    for split_name, split_metrics in nms_metrics.items():
+        print(f"\n{split_name.upper()} NMS")
+        print(f"  Threshold:                 {split_metrics['threshold']:.2f}")
+        print(f"  Suppression window sec:    {split_metrics['suppress_window_sec']:.2f}")
+        print(f"  Match tolerance sec:       {split_metrics['tolerance_sec']:.2f}")
+        print(f"  Raw predicted pass frames: {split_metrics['raw_predicted_pass_frames']:,}")
+        print(f"  NMS final detections:      {split_metrics['nms_final_pass_detections']:,}")
+        print(f"  True pass events:          {split_metrics['true_events']:,}")
+        print(f"  TP:                        {split_metrics['tp']:,}")
+        print(f"  FP:                        {split_metrics['fp']:,}")
+        print(f"  FN:                        {split_metrics['fn']:,}")
+        print(f"  Precision:                 {split_metrics['precision']:.4f}")
+        print(f"  Recall:                    {split_metrics['recall']:.4f}")
+        print(f"  F1:                        {split_metrics['f1']:.4f}")
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
