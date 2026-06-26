@@ -39,13 +39,30 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 
 FEATURES = [
+    # Existing engineered features
     "ball_speed_avg_xy",
     "closest_player_team_id",
+
+    # Raw ball/context features
     "t.ball_x",
     "t.ball_y",
     "t.ball_z",
     "t.player_count",
     "t.visible_player_count",
+
+    # New engineered features
+    "closest_player_distance_to_ball",
+    "ball_position_missing",
+    "ball_z_missing",
+    "ball_speed_missing",
+    "closest_player_missing",
+    "ball_direction_x_5f",
+    "ball_direction_y_5f",
+    "ball_distance_5f",
+    "ball_acceleration_xy",
+    "closest_player_distance_change",
+    "closest_player_changed",
+    "closest_team_changed",
 ]
 TARGET = "is_pass"
 MODEL_DIR = ARTIFACTS_DIR / "models"

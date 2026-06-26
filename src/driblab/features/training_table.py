@@ -38,18 +38,23 @@ def _player_slots(schema_names: set[str]) -> list[str]:
 
 def _closest_player(
     rows: pd.DataFrame, slots: list[str]
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Vectorized closest visible player to ball for every row.
 
-    Returns (closest_player_id, closest_player_team_id) as object arrays
-    aligned to rows. Values are NaN where ball position is missing or no
-    visible player with known coordinates exists.
+    Returns:
+    - closest_player_id
+    - closest_player_team_id
+    - closest_player_distance_to_ball
+
+    Values are NaN where ball position is missing or no visible player
+    with known coordinates exists.
     """
     n = len(rows)
-    nan_col: np.ndarray = np.full(n, np.nan, dtype=object)
+    nan_object_col: np.ndarray = np.full(n, np.nan, dtype=object)
+    nan_float_col: np.ndarray = np.full(n, np.nan, dtype=float)
 
     if n == 0 or not slots:
-        return nan_col, nan_col.copy()
+        return nan_object_col, nan_object_col.copy(), nan_float_col
 
     ball_x = pd.to_numeric(rows["t.ball_x"], errors="coerce").to_numpy(dtype=float)
     ball_y = pd.to_numeric(rows["t.ball_y"], errors="coerce").to_numpy(dtype=float)
@@ -77,12 +82,14 @@ def _closest_player(
         visible = (vis_raw == "true").to_numpy(dtype=bool)
 
         valid = visible & ~np.isnan(px) & ~np.isnan(py) & ~ball_missing
+
         dists[valid, j] = np.sqrt(
             (px[valid] - ball_x[valid]) ** 2 + (py[valid] - ball_y[valid]) ** 2
         )
 
         if id_col in rows.columns:
             pid_arr[:, j] = rows[id_col].to_numpy(dtype=object)
+
         if team_col in rows.columns:
             team_arr[:, j] = rows[team_col].to_numpy(dtype=object)
 
@@ -92,8 +99,9 @@ def _closest_player(
 
     closest_ids = np.where(all_inf, np.nan, pid_arr[row_idx, min_idx])
     closest_teams = np.where(all_inf, np.nan, team_arr[row_idx, min_idx])
+    closest_distances = np.where(all_inf, np.nan, dists[row_idx, min_idx])
 
-    return closest_ids, closest_teams
+    return closest_ids, closest_teams, closest_distances
 
 
 def _add_ball_speed(df: pd.DataFrame) -> pd.DataFrame:
@@ -114,6 +122,80 @@ def _add_ball_speed(df: pd.DataFrame) -> pd.DataFrame:
     df["ball_speed_avg_xy"] = pd.concat(parts).reindex(df.index)
     return df
 
+def _add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add pass-oriented engineered features.
+
+    These features describe ball movement, missing tracking data,
+    closest-player distance, and changes in closest player/team.
+    """
+    df = df.copy()
+    group_cols = ["t.match_id", "t.period"]
+
+    ball_x = pd.to_numeric(df["t.ball_x"], errors="coerce")
+    ball_y = pd.to_numeric(df["t.ball_y"], errors="coerce")
+    ball_z = pd.to_numeric(df["t.ball_z"], errors="coerce")
+    ball_speed = pd.to_numeric(df["ball_speed_avg_xy"], errors="coerce")
+    closest_dist = pd.to_numeric(
+        df["closest_player_distance_to_ball"],
+        errors="coerce",
+    )
+
+    # Missingness flags
+    df["ball_position_missing"] = (
+        ball_x.isna() | ball_y.isna()
+    ).astype(int)
+
+    df["ball_z_missing"] = ball_z.isna().astype(int)
+    df["ball_speed_missing"] = ball_speed.isna().astype(int)
+    df["closest_player_missing"] = df["closest_player_id"].isna().astype(int)
+
+    # Ball movement over 5 frames
+    df["ball_direction_x_5f"] = ball_x.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff(5)
+
+    df["ball_direction_y_5f"] = ball_y.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff(5)
+
+    df["ball_distance_5f"] = np.sqrt(
+        df["ball_direction_x_5f"] ** 2
+        + df["ball_direction_y_5f"] ** 2
+    )
+
+    # Change in ball speed
+    df["ball_acceleration_xy"] = ball_speed.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff()
+
+    # Change in closest-player distance
+    df["closest_player_distance_change"] = closest_dist.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff()
+
+    # Closest player/team change
+    previous_closest_player = df.groupby(group_cols, sort=False)[
+        "closest_player_id"
+    ].shift(1)
+
+    previous_closest_team = df.groupby(group_cols, sort=False)[
+        "closest_player_team_id"
+    ].shift(1)
+
+    df["closest_player_changed"] = (
+        df["closest_player_id"].notna()
+        & previous_closest_player.notna()
+        & (df["closest_player_id"] != previous_closest_player)
+    ).astype(int)
+
+    df["closest_team_changed"] = (
+        df["closest_player_team_id"].notna()
+        & previous_closest_team.notna()
+        & (df["closest_player_team_id"] != previous_closest_team)
+    ).astype(int)
+
+    return df
+
 
 def build_training_table(pre_training_path: Path) -> pd.DataFrame:
     schema_names = set(pq.read_schema(pre_training_path).names)
@@ -131,21 +213,36 @@ def build_training_table(pre_training_path: Path) -> pd.DataFrame:
 
     df = _add_ball_speed(df)
 
-    closest_ids, closest_teams = _closest_player(df, slots)
+    closest_ids, closest_teams, closest_distances = _closest_player(df, slots)
     df["closest_player_id"] = closest_ids
     df["closest_player_team_id"] = closest_teams
+    df["closest_player_distance_to_ball"] = closest_distances
+
+    df = _add_engineered_features(df)
 
     df["is_pass"] = (df["p.event_label"] == "PASS").astype(int)
 
     t_cols = [c for c in df.columns if c.startswith("t.")]
     added_cols = [
-        "p.event_label",
-        "data_split",
-        "is_pass",
-        "ball_speed_avg_xy",
-        "closest_player_id",
-        "closest_player_team_id",
-    ]
+    "p.event_label",
+    "data_split",
+    "is_pass",
+    "ball_speed_avg_xy",
+    "closest_player_id",
+    "closest_player_team_id",
+    "closest_player_distance_to_ball",
+    "ball_position_missing",
+    "ball_z_missing",
+    "ball_speed_missing",
+    "closest_player_missing",
+    "ball_direction_x_5f",
+    "ball_direction_y_5f",
+    "ball_distance_5f",
+    "ball_acceleration_xy",
+    "closest_player_distance_change",
+    "closest_player_changed",
+    "closest_team_changed",
+]
     df = df[t_cols + added_cols]
 
     # Sample: keep the first frame of every non-overlapping 5-frame window.
