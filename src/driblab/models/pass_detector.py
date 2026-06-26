@@ -41,6 +41,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 FEATURES = [
     "ball_speed_avg_xy",
     "closest_player_team_id",
+    "t.ball_x",
+    "t.ball_y",
+    "t.ball_z",
+    "t.player_count",
+    "t.visible_player_count",
 ]
 TARGET = "is_pass"
 MODEL_DIR = ARTIFACTS_DIR / "models"
@@ -120,11 +125,40 @@ def train_pass_detector(
         verbose_eval=50,
     )
 
+    best_threshold, threshold_results = find_best_f1_threshold(
+        model=model,
+        dmatrix=dvalidation,
+        y_true=y_validation,
+        start=0.0,
+        stop=0.5,
+        step=0.05,
+    )
+
+    print("\nValidation F1 by threshold:")
+    print(
+        threshold_results[
+            ["threshold", "accuracy", "f1", "roc_auc", "tn", "fp", "fn", "tp"]
+        ].to_string(index=False)
+    )
+
+    print("\nBest validation threshold:")
+    print(f"  Threshold: {best_threshold:.2f}")
+    print(
+        f"  Validation F1: "
+        f"{threshold_results.loc[threshold_results['threshold'] == best_threshold, 'f1'].iloc[0]:.4f}"
+    )
+
     metrics = {
-        "train": evaluate_split(model, dtrain, y_train),
-        "validation": evaluate_split(model, dvalidation, y_validation),
-        "test": evaluate_split(model, dtest, y_test),
+        "train": evaluate_split(model, dtrain, y_train, threshold=best_threshold),
+        "validation": evaluate_split(
+         model,
+            dvalidation,
+            y_validation,
+            threshold=best_threshold,
+        ),
+        "test": evaluate_split(model, dtest, y_test, threshold=best_threshold),
     }
+    
     predictions = {
         "train": {"y_true": y_train, "y_proba": model.predict(dtrain)},
         "validation": {
@@ -155,10 +189,11 @@ def train_pass_detector(
     metadata = {
         "features": FEATURES,
         "target": TARGET,
-        "threshold": 0.5,
+        "threshold": best_threshold,
         "params": params,
         "best_iteration": int(model.best_iteration),
     }
+
     model.save_model(model_path)
     metadata_path.write_text(
         json.dumps(metadata, indent=2),
@@ -191,14 +226,17 @@ def evaluate_split(
     model: xgb.Booster,
     dmatrix: xgb.DMatrix,
     y_true: pd.Series,
+    threshold: float = 0.5,
 ) -> dict[str, Any]:
-    """Evaluate one split with a 0.5 probability threshold."""
+    """Evaluate one split with a chosen probability threshold."""
     y_pred_proba = model.predict(dmatrix)
-    y_pred = (y_pred_proba > 0.5).astype(int)
+    y_pred = (y_pred_proba > threshold).astype(int)
     cm = confusion_matrix(y_true, y_pred)
+
     return {
+        "threshold": float(threshold),
         "accuracy": float(accuracy_score(y_true, y_pred)),
-        "f1": float(f1_score(y_true, y_pred)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "roc_auc": float(roc_auc_score(y_true, y_pred_proba)),
         "tn": int(cm[0, 0]),
         "fp": int(cm[0, 1]),
@@ -206,6 +244,40 @@ def evaluate_split(
         "tp": int(cm[1, 1]),
     }
 
+def find_best_f1_threshold(
+    model: xgb.Booster,
+    dmatrix: xgb.DMatrix,
+    y_true: pd.Series,
+    start: float = 0.0,
+    stop: float = 0.5,
+    step: float = 0.05,
+) -> tuple[float, pd.DataFrame]:
+    """Test thresholds and return the one with the best validation F1."""
+    rows = []
+
+    thresholds = np.arange(start, stop + step, step)
+
+    for threshold in thresholds:
+        threshold = round(float(threshold), 2)
+        metrics = evaluate_split(
+            model=model,
+            dmatrix=dmatrix,
+            y_true=y_true,
+            threshold=threshold,
+        )
+
+        rows.append(metrics)
+
+    threshold_results = pd.DataFrame(rows)
+
+    best_row = threshold_results.sort_values(
+        ["f1", "accuracy"],
+        ascending=False,
+    ).iloc[0]
+
+    best_threshold = float(best_row["threshold"])
+
+    return best_threshold, threshold_results
 
 def feature_importance(model: xgb.Booster) -> pd.DataFrame:
     """Return feature importance sorted by split count."""
@@ -251,7 +323,7 @@ def save_reports(
 def _evaluation_report(metrics: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {
         "target": TARGET,
-        "threshold": 0.5,
+        "threshold": metrics["validation"]["threshold"],
         "features": FEATURES,
         "splits": {
             split_name: {
@@ -352,9 +424,10 @@ def _plot_confusion_matrices(
 def _print_metrics(metrics: dict[str, dict[str, Any]]) -> None:
     for split_name, split_metrics in metrics.items():
         print(f"\n{split_name.upper()}")
-        print(f"  Accuracy: {split_metrics['accuracy']:.4f}")
-        print(f"  F1:       {split_metrics['f1']:.4f}")
-        print(f"  ROC-AUC:  {split_metrics['roc_auc']:.4f}")
+        print(f"  Threshold: {split_metrics['threshold']:.2f}")
+        print(f"  Accuracy:  {split_metrics['accuracy']:.4f}")
+        print(f"  F1:        {split_metrics['f1']:.4f}")
+        print(f"  ROC-AUC:   {split_metrics['roc_auc']:.4f}")
         print("  Confusion Matrix:")
         print(f"    TN={split_metrics['tn']}, FP={split_metrics['fp']}")
         print(f"    FN={split_metrics['fn']}, TP={split_metrics['tp']}")
