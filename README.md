@@ -71,7 +71,13 @@ Or run all stages in sequence:
 ```bash
 python main.py all
 ```
+## Event Detection Results
 
+The project includes both a binary pass detector and a multi-class event detector. The binary pass detector improved after validation-based threshold tuning, while additional features gave only marginal improvements. The multi-class detector runs end-to-end, but minority event classes remain difficult due to class imbalance and likely label noise.
+
+A detailed summary of the modelling results, NMS tuning, and main limitations is available here:
+
+[`docs/event_detector_results_summary.md`](docs/event_detector_results_summary.md)
 ---
 
 ## Notebooks
