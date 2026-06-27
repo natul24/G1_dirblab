@@ -363,8 +363,8 @@ def train_event_detector(
         best_thresh = 0.10
         best_window = 1.5
 
-        for thresh in np.arange(0.05, 0.35, 0.05):
-            for window in [1.25, 1.5, 1.75]:
+        for thresh in np.arange(0.10, 0.61, 0.05):
+            for window in [1.5, 1.75, 2.0, 2.5]:
                 r = _run_class_nms_eval(
                     table=val_df,
                     y_true=y_val,
