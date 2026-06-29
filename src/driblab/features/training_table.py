@@ -1,32 +1,33 @@
-"""Build training table for pass classification.
 
+"""Build training table for pass classification.
+ 
 Reads pre_training_table.parquet, computes rolling 2D ball speed over
 ±5 frames, identifies the closest visible player to the ball for every
 row, assigns match-level data splits, and derives the pass binary target.
 Writes one parquet per split.
 """
-
+ 
 from __future__ import annotations
-
+ 
 import re
 from pathlib import Path
-
+ 
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
-
+ 
 from driblab.config import CONFIG_PATH, MODEL_BASE_DATA_DIR
 from driblab.features import match_splits
-
-
+ 
+ 
 SPLIT_OUTPUT_PATHS = {
     split: MODEL_BASE_DATA_DIR / f"training_table_{split}.parquet"
     for split in ["train", "validation", "test"]
 }
-
+ 
 _PLAYER_X_PATTERN = re.compile(r"t\.player_(\d+)_x$")
-
-
+ 
+ 
 def _player_slots(schema_names: set[str]) -> list[str]:
     """Return sorted slot identifiers for player columns present in the schema."""
     return sorted(
@@ -34,142 +35,311 @@ def _player_slots(schema_names: set[str]) -> list[str]:
         for col in schema_names
         if _PLAYER_X_PATTERN.match(col)
     )
-
-
+ 
+ 
 def _closest_player(
     rows: pd.DataFrame, slots: list[str]
-) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorized closest visible player to ball for every row.
-
-    Returns (closest_player_id, closest_player_team_id) as object arrays
-    aligned to rows. Values are NaN where ball position is missing or no
-    visible player with known coordinates exists.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized closest and second-closest visible player to ball for every row.
+ 
+    Returns:
+    - closest_player_id
+    - closest_player_team_id
+    - closest_player_distance_to_ball
+    - second_closest_player_distance_to_ball
+    - second_closest_player_same_team  (1 if same team as closest, 0 if not, NaN if missing)
+ 
+    Values are NaN where ball position is missing or no visible player
+    with known coordinates exists.
     """
     n = len(rows)
-    nan_col: np.ndarray = np.full(n, np.nan, dtype=object)
-
+    nan_object_col: np.ndarray = np.full(n, np.nan, dtype=object)
+    nan_float_col: np.ndarray = np.full(n, np.nan, dtype=float)
+ 
     if n == 0 or not slots:
-        return nan_col, nan_col.copy()
-
+        return (
+            nan_object_col,
+            nan_object_col.copy(),
+            nan_float_col.copy(),
+            nan_float_col.copy(),
+            nan_float_col.copy(),
+        )
+ 
     ball_x = pd.to_numeric(rows["t.ball_x"], errors="coerce").to_numpy(dtype=float)
     ball_y = pd.to_numeric(rows["t.ball_y"], errors="coerce").to_numpy(dtype=float)
     ball_missing = np.isnan(ball_x) | np.isnan(ball_y)
-
+ 
     n_slots = len(slots)
     dists = np.full((n, n_slots), np.inf)
     pid_arr = np.full((n, n_slots), np.nan, dtype=object)
     team_arr = np.full((n, n_slots), np.nan, dtype=object)
-
+ 
     for j, slot in enumerate(slots):
         x_col = f"t.player_{slot}_x"
         y_col = f"t.player_{slot}_y"
         vis_col = f"t.player_{slot}_visible"
         id_col = f"t.player_{slot}_id"
         team_col = f"t.player_{slot}_team_id"
-
+ 
         if x_col not in rows.columns:
             continue
-
+ 
         px = pd.to_numeric(rows[x_col], errors="coerce").to_numpy(dtype=float)
         py = pd.to_numeric(rows[y_col], errors="coerce").to_numpy(dtype=float)
-
+ 
         vis_raw = rows[vis_col].astype(str).str.lower()
         visible = (vis_raw == "true").to_numpy(dtype=bool)
-
+ 
         valid = visible & ~np.isnan(px) & ~np.isnan(py) & ~ball_missing
+ 
         dists[valid, j] = np.sqrt(
             (px[valid] - ball_x[valid]) ** 2 + (py[valid] - ball_y[valid]) ** 2
         )
-
+ 
         if id_col in rows.columns:
             pid_arr[:, j] = rows[id_col].to_numpy(dtype=object)
+ 
         if team_col in rows.columns:
             team_arr[:, j] = rows[team_col].to_numpy(dtype=object)
-
+ 
+    row_idx = np.arange(n)
     min_idx = np.argmin(dists, axis=1)
     all_inf = np.all(dists == np.inf, axis=1)
-    row_idx = np.arange(n)
-
+ 
     closest_ids = np.where(all_inf, np.nan, pid_arr[row_idx, min_idx])
     closest_teams = np.where(all_inf, np.nan, team_arr[row_idx, min_idx])
-
-    return closest_ids, closest_teams
-
-
+    closest_distances = np.where(all_inf, np.nan, dists[row_idx, min_idx])
+ 
+    # Second closest player: mask the closest and find the next minimum
+    dists_copy = dists.copy()
+    dists_copy[row_idx, min_idx] = np.inf
+    min_idx2 = np.argmin(dists_copy, axis=1)
+    all_inf2 = np.all(dists_copy == np.inf, axis=1)
+ 
+    second_closest_distances = np.where(
+        all_inf2, np.nan, dists_copy[row_idx, min_idx2]
+    )
+    second_closest_teams = np.where(
+        all_inf2, np.nan, team_arr[row_idx, min_idx2]
+    )
+ 
+    # 1 if second closest is same team as closest, 0 if different, NaN if missing
+    both_present = ~all_inf & ~all_inf2
+    same_team = np.where(
+        both_present,
+        (closest_teams == second_closest_teams).astype(float),
+        np.nan,
+    )
+ 
+    return (
+        closest_ids,
+        closest_teams,
+        closest_distances,
+        second_closest_distances,
+        same_team,
+    )
+ 
+ 
 def _add_ball_speed(df: pd.DataFrame) -> pd.DataFrame:
-    """Add ball_speed_avg_xy: rolling mean of 2D frame-to-frame speed over ±5 frames.
-
+    """Add ball speed features:
+    - ball_speed_avg_xy: rolling mean over ±5 frames (11-frame window)
+    - ball_speed_avg_15f: rolling mean over ±7 frames (15-frame window)
+ 
     Computed per (match_id, period) group so steps never cross boundaries.
-    The rolling window is 11 frames wide (center=True), giving each row an
-    average speed drawn from 5 frames before and 5 frames after.
     """
-    parts = []
+    parts_raw = []
+    parts_5 = []
+    parts_15 = []
+
     for _, group in df.groupby(["t.match_id", "t.period"], sort=False):
         bx = pd.to_numeric(group["t.ball_x"], errors="coerce")
         by = pd.to_numeric(group["t.ball_y"], errors="coerce")
         step = np.sqrt(bx.diff() ** 2 + by.diff() ** 2)
-        parts.append(step.rolling(window=11, center=True, min_periods=1).mean())
+        parts_raw.append(step)
+        parts_5.append(step.rolling(window=11, center=True, min_periods=1).mean())
+        parts_15.append(step.rolling(window=15, center=True, min_periods=1).mean())
 
     df = df.copy()
-    df["ball_speed_avg_xy"] = pd.concat(parts).reindex(df.index)
+    df["ball_speed_raw"] = pd.concat(parts_raw).reindex(df.index)
+    df["ball_speed_avg_xy"] = pd.concat(parts_5).reindex(df.index)
+    df["ball_speed_avg_15f"] = pd.concat(parts_15).reindex(df.index)
+    return df
+ 
+ 
+def _add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add pass-oriented engineered features.
+ 
+    These features describe ball movement, missing tracking data,
+    closest-player distance, and changes in closest player/team.
+    """
+    df = df.copy()
+    group_cols = ["t.match_id", "t.period"]
+ 
+    ball_x = pd.to_numeric(df["t.ball_x"], errors="coerce")
+    ball_y = pd.to_numeric(df["t.ball_y"], errors="coerce")
+    ball_z = pd.to_numeric(df["t.ball_z"], errors="coerce")
+    ball_speed = pd.to_numeric(df["ball_speed_avg_xy"], errors="coerce")
+    closest_dist = pd.to_numeric(
+        df["closest_player_distance_to_ball"],
+        errors="coerce",
+    )
+ 
+    # Missingness flags
+    df["ball_position_missing"] = (
+        ball_x.isna() | ball_y.isna()
+    ).astype(int)
+ 
+    df["ball_z_missing"] = ball_z.isna().astype(int)
+    df["ball_speed_missing"] = ball_speed.isna().astype(int)
+    df["closest_player_missing"] = df["closest_player_id"].isna().astype(int)
+ 
+    # Ball movement over 5 frames
+    df["ball_direction_x_5f"] = ball_x.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff(5)
+ 
+    df["ball_direction_y_5f"] = ball_y.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff(5)
+ 
+    df["ball_distance_5f"] = np.sqrt(
+        df["ball_direction_x_5f"] ** 2
+        + df["ball_direction_y_5f"] ** 2
+    )
+ 
+    # Change in ball speed
+    df["ball_acceleration_xy"] = ball_speed.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff()
+ 
+    # Change in closest-player distance
+    df["closest_player_distance_change"] = closest_dist.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff()
+ 
+    # Closest player/team change
+    previous_closest_player = df.groupby(group_cols, sort=False)[
+        "closest_player_id"
+    ].shift(1)
+ 
+    previous_closest_team = df.groupby(group_cols, sort=False)[
+        "closest_player_team_id"
+    ].shift(1)
+ 
+    df["closest_player_changed"] = (
+        df["closest_player_id"].notna()
+        & previous_closest_player.notna()
+        & (df["closest_player_id"] != previous_closest_player)
+    ).astype(int)
+ 
+    df["closest_team_changed"] = (
+        df["closest_player_team_id"].notna()
+        & previous_closest_team.notna()
+        & (df["closest_player_team_id"] != previous_closest_team)
+    ).astype(int)
+
+    # Short/long speed ratio — detects sudden speed changes at pass moment
+    df["ball_speed_ratio"] = ball_speed / pd.to_numeric(
+        df["ball_speed_avg_15f"], errors="coerce"
+    )
+
+    # Vertical ball movement over 5 frames
+    df["ball_z_change_5f"] = ball_z.groupby(
+        [df["t.match_id"], df["t.period"]]
+    ).diff(5)
+
+    # Gap between closest and second-closest player
+    df["distance_gap"] = pd.to_numeric(
+        df["second_closest_player_distance"], errors="coerce"
+    ) - closest_dist
+
     return df
 
 
 def build_training_table(pre_training_path: Path) -> pd.DataFrame:
     schema_names = set(pq.read_schema(pre_training_path).names)
     slots = _player_slots(schema_names)
-
+ 
     df = pd.read_parquet(pre_training_path)
     print(f"Loaded {len(df):,} rows, {df.shape[1]} columns\n")
-
+ 
     splits = match_splits.load_match_splits(CONFIG_PATH)
     df = match_splits.add_data_split_column(df, splits, match_col="t.match_id")
     df = df.sort_values(
         ["t.match_id", "t.period", "t.frame"],
         kind="mergesort",
     ).reset_index(drop=True)
-
+ 
     df = _add_ball_speed(df)
-
-    closest_ids, closest_teams = _closest_player(df, slots)
+ 
+    (
+        closest_ids,
+        closest_teams,
+        closest_distances,
+        second_closest_distances,
+        second_closest_same_team,
+    ) = _closest_player(df, slots)
+ 
     df["closest_player_id"] = closest_ids
     df["closest_player_team_id"] = closest_teams
-
+    df["closest_player_distance_to_ball"] = closest_distances
+    df["second_closest_player_distance"] = second_closest_distances
+    df["second_closest_same_team"] = second_closest_same_team
+ 
+    df = _add_engineered_features(df)
+ 
     df["is_pass"] = (df["p.event_label"] == "PASS").astype(int)
-
+ 
     t_cols = [c for c in df.columns if c.startswith("t.")]
     added_cols = [
         "p.event_label",
         "data_split",
         "is_pass",
+        "ball_speed_raw",
         "ball_speed_avg_xy",
+        "ball_speed_avg_15f",
         "closest_player_id",
         "closest_player_team_id",
+        "closest_player_distance_to_ball",
+        "second_closest_player_distance",
+        "second_closest_same_team",
+        "ball_position_missing",
+        "ball_z_missing",
+        "ball_speed_missing",
+        "closest_player_missing",
+        "ball_direction_x_5f",
+        "ball_direction_y_5f",
+        "ball_distance_5f",
+        "ball_acceleration_xy",
+        "closest_player_distance_change",
+        "closest_player_changed",
+        "closest_team_changed",
+        "ball_speed_ratio",
+        "ball_z_change_5f",
+        "distance_gap",
     ]
     df = df[t_cols + added_cols]
-
+ 
     # Sample: keep the first frame of every non-overlapping 5-frame window.
-    # Within each (match_id, period) group (already sorted by t.frame), rows at
-    # positions 0, 5, 10, … are selected — one row per 0.5-second window.
     row_in_group = df.groupby(
         ["t.match_id", "t.period"], sort=False
     ).cumcount()
     df = df.loc[row_in_group % 5 == 0].reset_index(drop=True)
-
+ 
     print(f"Built {len(df):,} rows × {df.shape[1]} columns  (1 per 5-frame window)\n")
     return df
-
-
+ 
+ 
 def main() -> None:
     pre_training_path = MODEL_BASE_DATA_DIR / "pre_training_table.parquet"
     training_table = build_training_table(pre_training_path)
-
+ 
     MODEL_BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
     for split_name, path in SPLIT_OUTPUT_PATHS.items():
         split_df = training_table[training_table["data_split"] == split_name]
         split_df.to_parquet(path, index=False)
         print(f"Saved {split_name:12s}: {len(split_df):,} rows -> {path.name}")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
